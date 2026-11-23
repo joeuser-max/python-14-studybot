@@ -1,88 +1,38 @@
-# ClassPulse｜蕭博軒（A）負責功能
+# ClassPulse｜A 組員：蕭博軒
 
-主動學習回饋／進度追蹤工具的 **A 組員程式**。此套件不冒充已完成的 LINE Bot 或排程器。LINE Webhook、主動提醒與排程由 B（莊育哲）負責。
+本文件說明已整合至 `joeuser-max/python-14-studybot` 的 A 模組。B 組員（莊育哲）負責 `scheduler.py`、`line_bot.py`、`reminder_worker.py`；兩人的程式已在同一個 Repository，完整部署仍須驗收。
 
-## A 已完成的模組
+## A 模組及實際用途
 
-| 檔案 | 功能 |
-|---|---|
-| `app.py` | Streamlit 課表、讀書時段、任務、狀態、回饋、Markdown 下載與 AI 建議確認畫面 |
-| `storage.py` | JSON 驗證、安全讀寫、檔案鎖、筆記去重（同檔原子更新） |
-| `tracker.py` | 課後提醒回覆率、明確任務完成數的計算 |
-| `exporter.py` | 將課程、任務、排程、筆記、時間戳記匯出為 UTF-8 Markdown；基本個資遮蔽 |
-| `ai_assistant.py` | 透過 OpenAI Responses API 把學習筆記轉成有來源 ID 的待確認複習建議 |
-| `tests/` | 可離線執行的自動測試 |
+| 檔案 | 職責 |
+| --- | --- |
+| `app.py` | Streamlit 課表、可用讀書時段、任務狀態、排程、LINE 提醒設定、Markdown 匯出及 AI 建議確認 |
+| `storage.py` | JSON 驗證、檔案鎖、原子寫入與筆記去重 |
+| `tracker.py` | 課後回覆率、任務進度統計 |
+| `exporter.py` | 匯出課表、Deadline、排程、回饋與統計為 Markdown |
+| `ai_assistant.py` | 透過 OpenAI Responses API 的 Structured Outputs 產生有來源筆記 ID 的複習建議 |
+| `plan_bridge.py` | 將 B 的排程結果轉為 A 的使用者資料格式 |
 
-## 本機執行
+## 排程與資料的整合方式
 
-需要 Python 3.11 以上。
+- `scheduler.make_plan(tasks, availability, previous_plan, now)` 回傳 `{"plan": [...], "new_alerts": [...]}`，不是單純的清單。`plan_bridge.normalize_plan_result()` 負責擷取排程並補上 `user_id`。
+- `storage.load_json()`、`storage.update_json()` 共用 `data/` 資料路徑與檔案鎖。LINE 筆記使用 `storage.save_feedback()` 去重。
+- `app.py` 在確認 AI 建議後才將任務寫入 `tasks.json`；不由 LLM 直接更新排程或宣稱任務完成。
+- `line_bot.py` 已有星期／時段／課名／筆記的文字式流程。真正的 LINE 推送、HTTPS Webhook、API 金鑰仍須實際部署測試。
 
-```bash
-python -m venv .venv
-# Windows: .venv\Scripts\activate
-# macOS/Linux:
-source .venv/bin/activate
-pip install -r requirements.txt
-streamlit run app.py
-```
+## 本機啟動與測試
 
-**不設定 OpenAI API Key**，仍可使用課表、任務、統計與 Markdown 匯出；只有真正按下「分析學習紀錄」才會呼叫外部模型。模型無法連線時會顯示錯誤，不修改資料。
+使用 Python 3.11 以上。安裝依賴後，以 `python -m streamlit run app.py` 啟動介面，使用 `python -m pytest -q` 執行離線測試。LINE Webhook 與常駐 Worker 的執行方式見主 [README](README.md)。
 
-要啟用 AI 分析，請在自己的電腦設定 `OPENAI_API_KEY` 與 `OPENAI_MODEL` 環境變數（`.env.example` 只提供範本，程式不會自行載入 `.env`），使用支援 Structured Outputs 的模型。勿把真正的 Key 放進程式、截圖或 GitHub。
+AI API 是 MVP 的正式整合介面，但不要求每次展示都連上外部模型。需設定私有 `OPENAI_API_KEY`、`OPENAI_MODEL`，且只在使用者確認傳送資料時才呼叫。未設定金鑰仍可以 Markdown 匯出或測試替身（Mock）驗證介面；不能把 Mock 當成真正的 API 回應。
 
-```bash
-# PowerShell 示例（填自己的值；不要提交）
-$env:OPENAI_API_KEY="你的私有金鑰"
-$env:OPENAI_MODEL="你可使用的支援結構化輸出模型名稱"
-streamlit run app.py
-```
+## Git 協作慣例
 
-## A 與 B 整合介面
+1. 先同步最新 `main`：`git switch main`、`git pull origin main`。
+2. 建立 `feature/...` 或 `chore/...` 分支，不直接修改 `main`。
+3. 提交前測試；Commit 訊息以**繁體中文**寫明具體變更，如 `修正：避免 LINE 提醒重送時覆蓋資料`。
+4. Push 分支並建立 Pull Request，審查後才合併。
 
-B 端新增以下檔案，不要在 A 的 `app.py` 中複製另一份排程邏輯：
+## 限制
 
-- `scheduler.py`：提供 `make_plan(tasks, availability, previous_plan, now) -> list[dict]`；或回傳 `(list[dict], alert_list)`，其中每筆 plan 至少包含 `user_id`、`task_id`、`availability_id`、`status`、`source`、`reason`。
-- `reminder_worker.py`：獨立常駐執行，更新 `data/reminders.json`。提醒狀態 `sent` 僅代表 API 接受，不代表已讀。
-- `line_bot.py`：驗證 LINE Webhook 後，將完整筆記 dict 傳給 `storage.save_feedback(feedback)`。B 必須將已綁定的 LINE 使用者對應到本期固定 `demo_user_001`。`webhook_event_id` 必填，同一 ID 的重送會返回 `False`，不增加第二筆。
-- `app.py` 不會在網頁開啟時自動發送 LINE，避免重新整理造成重複訊息。
-
-**提醒：** 只要 Streamlit、Webhook、Worker 共用同一個檔案系統，`storage.py` 的 `filelock` 可以保護同檔案讀改寫；若程式部署在不同機器或雲端無共享檔案系統，不能使用此 JSON 方案保證跨機一致性，需改用資料庫或集中儲存服務。
-
-## Git 協作與提交建議
-
-建議在自己的功能分支執行（範例分支名稱 `feature/hsiao-data-ai`）：
-
-```bash
-git clone https://github.com/joeuser-max/python-14-studybot.git
-cd python-14-studybot
-git switch -c feature/hsiao-data-ai
-# 複製此套件檔案到 repo；請確認並保留 B 已修改的檔案
-git status
-git add storage.py tracker.py tests/test_storage.py
-git commit -m "feat: add safe JSON storage and learning statistics"
-git add exporter.py tests/test_tracker_exporter_ai.py
-git commit -m "feat: export structured learning records with tests"
-git add ai_assistant.py
-git commit -m "feat: extract AI review tasks with source validation"
-git add app.py README(A).md requirements.txt .gitignore .env.example docs/ai-log.md
-git commit -m "feat: add Streamlit UI and integration documentation"
-git push -u origin feature/hsiao-data-ai
-```
-
-推送後以 Pull Request 併回 `main`。**若你沒有該 Repository 的寫入權限，push 會失敗**，請由 repo 擁有者邀請你的 GitHub 帳號作為 collaborator，或連結具有權限的 GitHub 帳號。
-
-## 測試
-
-```bash
-python -m unittest discover -s tests -v
-python -m compileall -q app.py storage.py tracker.py exporter.py ai_assistant.py
-```
-
-目前測試不呼叫 LINE，也不發送真實的 AI API 請求；AI 的結構化輸出解析與來源 ID 驗證可離線測試。
-
-## 本版限制
-
-- 單一測試使用者 `demo_user_001`，**未提供多使用者登入**；不宜暴露至公網給陌生使用者。
-- AI 外部分析需使用者同意，且僅作來源可追溯的複習建議，必須人工確認才新增任務。
-- Email／手機遮蔽是基本保護，不能保證辨識所有個資。
-- 完整 LINE 補筆記流程、實際 Push、獨立 worker、規則式排程，須待 B 的程式整合才能端到端驗收。
+目前採單一測試使用者 `demo_user_001`，不是正式多人帳號服務。單機 JSON 檔案鎖不保證跨機一致性。真正 LINE、AI API、長時間 Worker 運作仍須部署驗收。
