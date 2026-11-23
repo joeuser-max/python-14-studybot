@@ -37,11 +37,11 @@ $env:OPENAI_MODEL="你可使用的支援結構化輸出模型名稱"
 streamlit run app.py
 ```
 
-## A 與 B 整合介面
+## A 與 B 整合介面（目前已整合）
 
-B 端新增以下檔案，不要在 A 的 `app.py` 中複製另一份排程邏輯：
+整合版沿用以下介面，不在 A 的 `app.py` 中複製另一份排程邏輯：
 
-- `scheduler.py`：提供 `make_plan(tasks, availability, previous_plan, now) -> list[dict]`；或回傳 `(list[dict], alert_list)`，其中每筆 plan 至少包含 `user_id`、`task_id`、`availability_id`、`status`、`source`、`reason`。
+- `scheduler.py`：`make_plan(tasks, availability, previous_plan, now)` 回傳含 `plan` 與 `new_alerts` 的 dict；`plan_bridge.normalize_plan_result()` 轉換成 A 端使用的 list，並補入固定 `user_id`。
 - `reminder_worker.py`：獨立常駐執行，更新 `data/reminders.json`。提醒狀態 `sent` 僅代表 API 接受，不代表已讀。
 - `line_bot.py`：驗證 LINE Webhook 後，將完整筆記 dict 傳給 `storage.save_feedback(feedback)`。B 必須將已綁定的 LINE 使用者對應到本期固定 `demo_user_001`。`webhook_event_id` 必填，同一 ID 的重送會返回 `False`，不增加第二筆。
 - `app.py` 不會在網頁開啟時自動發送 LINE，避免重新整理造成重複訊息。
@@ -74,15 +74,15 @@ git push -u origin feature/hsiao-data-ai
 ## 測試
 
 ```bash
-python -m unittest discover -s tests -v
+python -m pytest -v
 python -m compileall -q app.py storage.py tracker.py exporter.py ai_assistant.py
 ```
 
 目前測試不呼叫 LINE，也不發送真實的 AI API 請求；AI 的結構化輸出解析與來源 ID 驗證可離線測試。
 
-## 本版限制
+## 整合後仍需外部設定／驗收
 
 - 單一測試使用者 `demo_user_001`，**未提供多使用者登入**；不宜暴露至公網給陌生使用者。
 - AI 外部分析需使用者同意，且僅作來源可追溯的複習建議，必須人工確認才新增任務。
 - Email／手機遮蔽是基本保護，不能保證辨識所有個資。
-- 完整 LINE 補筆記流程、實際 Push、獨立 worker、規則式排程，須待 B 的程式整合才能端到端驗收。
+- 完整 LINE 補筆記流程與 A 的 JSON 儲存已整合；真實 Push／Webhook 仍須自行設定 LINE OA、綁定碼及可公開存取的 HTTPS URL 才能端到端驗收。

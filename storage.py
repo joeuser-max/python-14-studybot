@@ -195,6 +195,19 @@ def add_event(event: dict) -> list:
     return update_json(data_path("events"), change)
 
 
+def update_event(event: dict) -> list:
+    validate_event(event)
+
+    def change(items: list) -> list:
+        if not any(row.get("event_id") == event["event_id"] for row in items):
+            raise DataError("找不到要修改的課程，請重新整理後再試")
+        return [
+            event if row.get("event_id") == event["event_id"] else row
+            for row in items
+        ]
+    return update_json(data_path("events"), change)
+
+
 def add_task(data: list, task: dict) -> list:
     validate_task(task)
     if any(item.get("task_id") == task["task_id"] for item in data):
@@ -210,6 +223,27 @@ def add_availability(slot: dict) -> list:
     def change(items: list) -> list:
         validate_availability(slot, items)
         return items + [slot]
+    return update_json(data_path("availability"), change)
+
+
+def update_availability(slot: dict) -> list:
+    def change(items: list) -> list:
+        existing = next(
+            (
+                row for row in items
+                if row.get("availability_id") == slot.get("availability_id")
+                and row.get("user_id") == slot.get("user_id")
+            ),
+            None,
+        )
+        if existing is None:
+            raise DataError("找不到要修改的讀書時段，請重新整理後再試")
+        others = [row for row in items if row is not existing]
+        validate_availability(slot, others)
+        return [
+            slot if row is existing else row
+            for row in items
+        ]
     return update_json(data_path("availability"), change)
 
 

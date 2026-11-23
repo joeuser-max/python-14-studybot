@@ -5,18 +5,22 @@ from datetime import date, datetime, time, timedelta
 from uuid import uuid4
 
 import streamlit as st
+from streamlit_calendar import calendar
 
 from ai_assistant import analyze_learning_records, AIError
+from calendar_events import build_calendar_events
 from exporter import export_learning_markdown
 from storage import (
     DataError, TZ, add_availability, add_event, add_task_to_storage,
-    create_id, data_path, load_json, save_json, set_task_status,
+    create_id, data_path, load_json, set_task_status, update_availability,
+    update_event, update_json,
 )
 from tracker import calculate_response_rate, calculate_task_progress
 from plan_bridge import normalize_plan_result
 
 USER_ID = "demo_user_001"  # MVP：單一測試使用者；正式多人版須加入登入機制
 WEEKDAYS = {1: "週一", 2: "週二", 3: "週三", 4: "週四", 5: "週五", 6: "週六", 7: "週日"}
+CALENDAR_KEY = "classpulse_schedule_calendar"
 
 st.set_page_config(page_title="ClassPulse", page_icon="📚", layout="wide")
 st.title("ClassPulse")
@@ -25,7 +29,7 @@ st.caption("主動式學習回饋與規劃助手｜蕭博軒負責：介面、JS
 
 def read_all() -> dict:
     return {name: load_json(data_path(name)) for name in
-            ("events", "tasks", "availability", "plan", "reminders", "feedback")}
+            ("events", "tasks", "availability", "plan", "reminders", "feedback", "users")}
 
 
 def own(records: list) -> list:
@@ -41,6 +45,18 @@ def safely(action, success: str) -> None:
         st.error(str(exc))
 
 
+def handle_calendar_change() -> None:
+    value = st.session_state.get(CALENDAR_KEY, {})
+    clicked = value.get("eventClick", {}).get("event", {})
+    props = clicked.get("extendedProps", {})
+    kind = props.get("kind")
+    if kind not in {"class", "availability"}:
+        return
+    item_id = props.get("event_id") if kind == "class" else props.get("availability_id")
+    if item_id:
+        st.session_state["selected_calendar_entry"] = {"kind": kind, "id": item_id}
+
+
 try:
     records = read_all()
 except DataError as exc:
@@ -50,6 +66,47 @@ except DataError as exc:
 pages = st.tabs(["課表與時段", "讀書任務與排程", "回饋與進度", "Markdown 與 AI"])
 
 with pages[0]:
+    courses = own(records["events"])
+    slots = own(records["availability"])
+    selected_calendar_entry = st.session_state.get("selected_calendar_entry", {})
+    st.subheader("課表與可用讀書時段行事曆")
+    st.caption("紅色為每週課程、綠色為可用時段、藍色為已排定讀書任務；可切換週／月／日檢視。")
+    calendar(
+        events=build_calendar_events(
+            courses,
+            slots,
+            own(records["tasks"]),
+            own(records["plan"]),
+        ),
+        options={
+            "headerToolbar": {
+                "left": "prev,next today",
+                "center": "title",
+                "right": "dayGridMonth,timeGridWeek,timeGridDay",
+            },
+            "initialView": "timeGridWeek",
+            "firstDay": 1,
+            "locale": "zh-tw",
+            "timeZone": "Asia/Taipei",
+            "allDaySlot": False,
+            "slotMinTime": "06:00:00",
+            "slotMaxTime": "24:00:00",
+            "nowIndicator": True,
+            "height": 650,
+            "eventTimeFormat": {
+                "hour": "2-digit",
+                "minute": "2-digit",
+                "hour12": False,
+            },
+        },
+        callbacks=["eventClick"],
+        key=CALENDAR_KEY,
+        on_change=handle_calendar_change,
+    )
+    if selected_calendar_entry:
+        st.info("已選取行事曆項目；下方修改區會自動帶入該筆資料。")
+    st.divider()
+
     st.subheader("設定每週課表")
     with st.form("add_class", clear_on_submit=True):
         name = st.text_input("課程名稱", placeholder="例如：控制系統")
@@ -68,13 +125,120 @@ with pages[0]:
                      "start_time": starts.strftime("%H:%M"), "end_time": ends.strftime("%H:%M"),
                      "offset_minutes": int(offset), "prompt_template": "class_feedback", "enabled": enabled}
             safely(lambda: add_event(event), "課程已儲存")
-    courses = own(records["events"])
+
+    st.subheader("修改既有課程")
     if courses:
-        st.dataframe([{"課程": x["title"], "星期": WEEKDAYS.get(x["weekday"], ""),
-                       "上課": x["start_time"], "下課": x["end_time"],
-                       "提醒": "啟用" if x["enabled"] else "停用"} for x in courses], hide_index=True)
+        course_ids = [course["event_id"] for course in courses]
+        clicked_course_id = (
+            selected_calendar_entry.get("id")
+            if selected_calendar_entry.get("kind") == "class"
+            else None
+        )
+        selected_course_id = clicked_course_id if clicked_course_id in course_ids else course_ids[0]
+        course_by_id = {course["event_id"]: course for course in courses}
+
+        def course_label(event_id: str) -> str:
+            course = course_by_id[event_id]
+            return (
+                f"{course['title']}｜{WEEKDAYS.get(course['weekday'], '')} "
+                f"{course['start_time']}–{course['end_time']}"
+            )
+
+        selected_course_id = st.selectbox(
+            "選擇要修改的課程（也可先點上方行事曆）",
+            course_ids,
+            index=course_ids.index(selected_course_id),
+            format_func=course_label,
+            key=f"edit_course_select_{selected_course_id}",
+        )
+        selected_course = course_by_id[selected_course_id]
+        with st.form(f"edit_course_form_{selected_course_id}"):
+            edit_course_name = st.text_input(
+                "課程名稱",
+                value=selected_course["title"],
+                key=f"edit_course_name_{selected_course_id}",
+            )
+            edit_weekday = st.selectbox(
+                "星期",
+                list(WEEKDAYS),
+                index=list(WEEKDAYS).index(selected_course["weekday"]),
+                format_func=lambda value: WEEKDAYS[value],
+                key=f"edit_course_weekday_{selected_course_id}",
+            )
+            edit_start_column, edit_end_column, edit_offset_column = st.columns(3)
+            with edit_start_column:
+                edit_start_time = st.time_input(
+                    "上課時間",
+                    value=time.fromisoformat(selected_course["start_time"]),
+                    step=900,
+                    key=f"edit_course_start_{selected_course_id}",
+                )
+            with edit_end_column:
+                edit_end_time = st.time_input(
+                    "下課時間",
+                    value=time.fromisoformat(selected_course["end_time"]),
+                    step=900,
+                    key=f"edit_course_end_{selected_course_id}",
+                )
+            with edit_offset_column:
+                edit_offset_minutes = st.number_input(
+                    "下課後提醒（分鐘）",
+                    min_value=0,
+                    max_value=60,
+                    value=selected_course["offset_minutes"],
+                    step=5,
+                    key=f"edit_course_offset_{selected_course_id}",
+                )
+            edit_course_enabled = st.checkbox(
+                "啟用課後 LINE 提醒",
+                value=selected_course["enabled"],
+                key=f"edit_course_enabled_{selected_course_id}",
+            )
+            if st.form_submit_button("儲存課程修改"):
+                updated_course = {
+                    **selected_course,
+                    "title": edit_course_name.strip(),
+                    "weekday": edit_weekday,
+                    "start_time": edit_start_time.strftime("%H:%M"),
+                    "end_time": edit_end_time.strftime("%H:%M"),
+                    "offset_minutes": int(edit_offset_minutes),
+                    "enabled": edit_course_enabled,
+                }
+                safely(lambda: update_event(updated_course), "課程已更新，行事曆已同步")
     else:
-        st.info("尚未建立課程。")
+        st.info("新增第一門課後，即可在此修改課程。")
+
+    st.subheader("LINE 提醒設定")
+    users = own(records["users"])
+    current_user = users[0] if users else {"user_id": USER_ID}
+    if current_user.get("line_user_id"):
+        st.success("LINE 帳號已綁定")
+    else:
+        st.info("尚未綁定 LINE。請依 README 設定綁定碼，並在 LINE 輸入「綁定 <綁定碼>」。")
+    with st.form("reminder_settings"):
+        class_reminders = st.checkbox(
+            "接收課後提醒與未排入警示",
+            value=current_user.get("reminders_enabled", True),
+        )
+        study_reminders = st.checkbox(
+            "接收讀書時段開始提醒",
+            value=current_user.get("study_reminders_enabled", False),
+        )
+        if st.form_submit_button("儲存提醒設定"):
+            def save_reminder_settings():
+                user = {
+                    **current_user,
+                    "user_id": USER_ID,
+                    "reminders_enabled": class_reminders,
+                    "study_reminders_enabled": study_reminders,
+                }
+                update_json(
+                    data_path("users"),
+                    lambda rows: [
+                        row for row in rows if row.get("user_id") != USER_ID
+                    ] + [user],
+                )
+            safely(save_reminder_settings, "提醒設定已儲存")
 
     st.subheader("新增可用讀書時段")
     with st.form("add_slot", clear_on_submit=True):
@@ -90,10 +254,74 @@ with pages[0]:
                         "date": slot_date.isoformat(), "start_time": slot_start.strftime("%H:%M"),
                         "available_minutes": int(minutes)}
             safely(lambda: add_availability(new_slot), "讀書時段已儲存")
-    slots = own(records["availability"])
+
+    st.subheader("修改既有可用讀書時段")
     if slots:
-        st.dataframe([{"時段 ID": a["availability_id"], "日期": a["date"], "開始": a["start_time"],
-                       "分鐘": a["available_minutes"]} for a in slots], hide_index=True)
+        slot_ids = [slot["availability_id"] for slot in slots]
+        clicked_slot_id = (
+            selected_calendar_entry.get("id")
+            if selected_calendar_entry.get("kind") == "availability"
+            else None
+        )
+        selected_slot_id = clicked_slot_id if clicked_slot_id in slot_ids else slot_ids[0]
+        slot_by_id = {slot["availability_id"]: slot for slot in slots}
+
+        def slot_label(availability_id: str) -> str:
+            slot = slot_by_id[availability_id]
+            return (
+                f"{slot['date']} {slot['start_time']}｜"
+                f"{slot['available_minutes']} 分鐘"
+            )
+
+        selected_slot_id = st.selectbox(
+            "選擇要修改的時段（也可先點上方行事曆）",
+            slot_ids,
+            index=slot_ids.index(selected_slot_id),
+            format_func=slot_label,
+            key=f"edit_slot_select_{selected_slot_id}",
+        )
+        selected_slot = slot_by_id[selected_slot_id]
+        with st.form(f"edit_slot_form_{selected_slot_id}"):
+            edit_slot_date = st.date_input(
+                "日期",
+                value=date.fromisoformat(selected_slot["date"]),
+                key=f"edit_slot_date_{selected_slot_id}",
+            )
+            edit_slot_start = st.time_input(
+                "開始時間",
+                value=time.fromisoformat(selected_slot["start_time"]),
+                step=900,
+                key=f"edit_slot_start_{selected_slot_id}",
+            )
+            edit_slot_minutes = st.number_input(
+                "可用分鐘",
+                min_value=1,
+                max_value=1440,
+                value=selected_slot["available_minutes"],
+                step=15,
+                key=f"edit_slot_minutes_{selected_slot_id}",
+            )
+            if st.form_submit_button("儲存時段修改"):
+                updated_slot = {
+                    **selected_slot,
+                    "date": edit_slot_date.isoformat(),
+                    "start_time": edit_slot_start.strftime("%H:%M"),
+                    "available_minutes": int(edit_slot_minutes),
+                }
+
+                def save_slot_changes():
+                    update_availability(updated_slot)
+                    update_json(
+                        data_path("plan"),
+                        lambda rows: [
+                            row for row in rows
+                            if row.get("user_id") != USER_ID
+                        ],
+                    )
+
+                safely(save_slot_changes, "時段已更新；請重新產生讀書計畫")
+    else:
+        st.info("新增第一個可用時段後，即可在此修改時段。")
 
 with pages[1]:
     st.subheader("新增讀書任務")
@@ -141,13 +369,34 @@ with pages[1]:
             try:
                 plan_result = make_plan(tasks, own(records["availability"]), own(records["plan"]), datetime.now(TZ))
                 new_plan = normalize_plan_result(plan_result, USER_ID)
-                save_json(data_path("plan"), new_plan)
+                def replace_plan(rows: list) -> list:
+                    old_plan = {
+                        row.get("task_id"): row for row in rows
+                        if row.get("user_id") == USER_ID
+                    }
+                    for row in new_plan:
+                        old = old_plan.get(row.get("task_id"), {})
+                        if (
+                            row.get("unscheduled_alert_id")
+                            and row.get("unscheduled_alert_id") == old.get("unscheduled_alert_id")
+                            and old.get("unscheduled_alerted")
+                        ):
+                            row["unscheduled_alerted"] = True
+                    return [row for row in rows if row.get("user_id") != USER_ID] + new_plan
+                update_json(data_path("plan"), replace_plan)
                 st.success("讀書計畫已重新產生")
                 st.rerun()
             except (DataError, ValueError) as exc:
                 st.error(f"排程失敗：{exc}")
     if own(records["plan"]):
         st.dataframe(own(records["plan"]), hide_index=True)
+        task_titles = {task["task_id"]: task["title"] for task in tasks}
+        for row in own(records["plan"]):
+            if row.get("status") == "unscheduled":
+                st.warning(
+                    f"任務「{task_titles.get(row.get('task_id'), row.get('task_id'))}」尚未排入："
+                    f"{row.get('reason') or '請檢查任務與可用時段。'}"
+                )
     else:
         st.info("尚無已儲存的讀書計畫。")
 
