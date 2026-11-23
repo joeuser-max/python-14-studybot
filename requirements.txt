@@ -1,4 +1,7 @@
+# 合併 A 與 B 的依賴，不覆蓋 B 原本的 Flask/requests/pytest/tzdata
 Flask>=3.0,<4
 requests>=2.31,<3
 pytest>=8.0,<9
 tzdata>=2025.2,<2027
+streamlit>=1.39,<2
+filelock>=3.12,<4
