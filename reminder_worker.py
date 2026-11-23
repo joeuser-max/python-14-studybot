@@ -11,19 +11,19 @@ from scheduler import (
     get_due_events,
     get_due_study_reminders,
 )
-from storage import load_json, save_json
+from storage import data_path, load_json, save_json
 
 
 TZ = ZoneInfo("Asia/Taipei")
-DATA_DIR = Path(__file__).resolve().parent / "data"
+DATA_DIR = data_path("events").parent
 LINE_PUSH_URL = "https://api.line.me/v2/bot/message/push"
 
 
 def push_line_message(user: dict, reminder: dict, text: str) -> bool:
     token = os.getenv("LINE_CHANNEL_ACCESS_TOKEN", "")
     if not token:
-        print(f"[模擬] 推送給 {user.get('line_user_id', reminder['user_id'])}: {text}")
-        return True
+        print(f"[模擬，未送達 LINE] 推送給 {user.get('line_user_id', reminder['user_id'])}: {text}")
+        return False
 
     key = reminder.get("retry_key") or str(uuid.uuid4())
     reminder["retry_key"] = key
