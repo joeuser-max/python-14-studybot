@@ -11,7 +11,7 @@ from scheduler import (
     get_due_events,
     get_due_study_reminders,
 )
-from storage import data_path, load_json, save_json
+from storage import data_path, load_json, update_json
 
 
 TZ = ZoneInfo("Asia/Taipei")
@@ -41,6 +41,32 @@ def push_line_message(user: dict, reminder: dict, text: str) -> bool:
     return True
 
 
+
+def _reserve_reminder(reminder: dict) -> dict:
+    """Persist the retry key BEFORE calling LINE; keep any existing entry on retries."""
+    result = {}
+    def change(items):
+        existing = next((row for row in items if row.get("reminder_id") == reminder["reminder_id"]), None)
+        if existing:
+            if not existing.get("retry_key"):
+                existing["retry_key"] = reminder["retry_key"]
+            result.update(existing)
+            return items
+        row = dict(reminder)
+        result.update(row)
+        return items + [row]
+    update_json(data_path("reminders"), change)
+    return result
+
+
+def _mark_reminder(reminder_id: str, status: str, sent_at: str) -> None:
+    """Merge status into the CURRENT data rather than overwriting stale snapshots."""
+    def change(items):
+        return [{**row, "status": status, "sent_at": sent_at}
+                if row.get("reminder_id") == reminder_id else row for row in items]
+    update_json(data_path("reminders"), change)
+
+
 def run_reminder_worker(interval_seconds: int = 60) -> None:
     while True:
         try:
@@ -52,7 +78,10 @@ def run_reminder_worker(interval_seconds: int = 60) -> None:
             users = load_json(DATA_DIR / "users.json")
             reminders = load_json(DATA_DIR / "reminders.json")
 
-            due = get_due_events(events, now, reminders)
+            user_by_id = {row["user_id"]: row for row in users}
+            due = [row for row in get_due_events(events, now, reminders)
+                   if user_by_id.get(row["user_id"], {}).get("reminders_enabled", False)
+                   and user_by_id[row["user_id"]].get("line_user_id")]
             due.extend(get_due_study_reminders(tasks, plan, availability, users, now, reminders))
 
             existing_unscheduled = {
@@ -90,19 +119,13 @@ def run_reminder_worker(interval_seconds: int = 60) -> None:
 
             for reminder in due:
                 reminder["retry_key"] = reminder.get("retry_key") or str(uuid.uuid4())
-                existing_reminder = next(
-                    (item for item in reminders if item.get("reminder_id") == reminder["reminder_id"]),
-                    None,
-                )
-                if existing_reminder is None:
-                    reminders.append(reminder)
-                    existing_reminder = reminder
-                save_json(DATA_DIR / "reminders.json", reminders)
-
-                user = next((row for row in users if row["user_id"] == reminder["user_id"]), None)
+                reserved = _reserve_reminder(reminder)
+                if reserved.get("status") == "sent":
+                    continue
+                reminder = reserved
+                user = user_by_id.get(reminder["user_id"])
                 if not user or not user.get("line_user_id"):
                     continue
-
                 if reminder["kind"] == "class_feedback":
                     text = "課後回饋時間到囉！請點選「補筆記」記錄今天的學習重點與疑問。"
                 elif reminder["kind"] == "study_session":
@@ -112,15 +135,12 @@ def run_reminder_worker(interval_seconds: int = 60) -> None:
 
                 try:
                     accepted = push_line_message(user, reminder, text)
-                    existing_reminder["status"] = "sent" if accepted else "failed"
-                    existing_reminder["sent_at"] = now.isoformat(timespec="seconds") if accepted else ""
-                    existing_reminder["retry_key"] = reminder["retry_key"]
+                    status = "sent" if accepted else "failed"
                 except Exception as exc:
-                    existing_reminder["status"] = "failed"
-                    existing_reminder["sent_at"] = ""
-                    existing_reminder["retry_key"] = reminder["retry_key"]
+                    status = "failed"
                     print(f"LINE Push 失敗（保留 retry key）：{exc}")
-                save_json(DATA_DIR / "reminders.json", reminders)
+                _mark_reminder(reminder["reminder_id"], status,
+                               now.isoformat(timespec="seconds") if status == "sent" else "")
         except Exception as exc:
             print(f"worker 檢查失敗：{exc}")
         time.sleep(interval_seconds)

@@ -10,7 +10,7 @@ from ai_assistant import analyze_learning_records, AIError
 from exporter import export_learning_markdown
 from storage import (
     DataError, TZ, add_availability, add_event, add_task_to_storage,
-    create_id, data_path, load_json, save_json, set_task_status,
+    create_id, data_path, load_json, save_json, set_task_status, update_json,
 )
 from tracker import calculate_response_rate, calculate_task_progress
 from plan_bridge import normalize_plan_result
@@ -25,7 +25,7 @@ st.caption("主動式學習回饋與規劃助手｜蕭博軒負責：介面、JS
 
 def read_all() -> dict:
     return {name: load_json(data_path(name)) for name in
-            ("events", "tasks", "availability", "plan", "reminders", "feedback")}
+            ("events", "tasks", "availability", "plan", "reminders", "feedback", "users")}
 
 
 def own(records: list) -> list:
@@ -75,6 +75,29 @@ with pages[0]:
                        "提醒": "啟用" if x["enabled"] else "停用"} for x in courses], hide_index=True)
     else:
         st.info("尚未建立課程。")
+
+    st.subheader("LINE 提醒設定")
+    line_account = next((u for u in records["users"] if u.get("user_id") == USER_ID
+                         and u.get("line_user_id")), None)
+    if not line_account:
+        st.info("尚未綁定 LINE。請先在 LINE 輸入「綁定 <綁定碼>」；綁定碼由管理員設定。")
+    else:
+        with st.form("line_preferences"):
+            class_notifications = st.checkbox(
+                "課後回饋與未排入任務提醒",
+                value=bool(line_account.get("reminders_enabled", False)),
+            )
+            study_notifications = st.checkbox(
+                "讀書時段開始提醒",
+                value=bool(line_account.get("study_reminders_enabled", False)),
+            )
+            if st.form_submit_button("儲存 LINE 提醒設定"):
+                def update_preferences(users):
+                    return [{**u, "reminders_enabled": class_notifications,
+                             "study_reminders_enabled": study_notifications}
+                            if u.get("user_id") == USER_ID else u for u in users]
+                safely(lambda: update_json(data_path("users"), update_preferences),
+                       "提醒設定已儲存")
 
     st.subheader("新增可用讀書時段")
     with st.form("add_slot", clear_on_submit=True):
