@@ -299,6 +299,7 @@ def get_due_study_reminders(
         if user_id not in enabled_users:
             continue
         key = (user_id, task["task_id"], slot["availability_id"])
+        start = _date_and_time(slot["date"], slot["start_time"])
         old = existing.get(key)
         if old and old.get("status") == "sent":
             continue
@@ -306,7 +307,6 @@ def get_due_study_reminders(
             if start <= now and start >= now - timedelta(minutes=5):
                 due.append(dict(old))
             continue
-        start = _date_and_time(slot["date"], slot["start_time"])
         if start <= now and start >= now - timedelta(minutes=5):
             due.append({
                 "reminder_id": f"study_{task['task_id']}_{slot['availability_id']}",
