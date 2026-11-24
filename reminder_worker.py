@@ -135,7 +135,10 @@ def run_reminder_worker_once(now: datetime | None = None) -> list[dict]:
         saved = _upsert_reminder({**reminder, "status": "pending"})
 
         if reminder["kind"] == "class_feedback":
-            text = "課後回饋時間到囉！請點選「補筆記」記錄今天的學習重點與疑問。"
+            text = (
+                "課後回饋時間到囉！請在 LINE 輸入「補筆記」，"
+                "回報本堂理解進度並記錄學習重點與疑問。"
+            )
         elif reminder["kind"] == "study_session":
             task = task_map.get(reminder["task_id"], {})
             text = f"讀書時段開始囉！任務：{task.get('title', reminder['task_id'])}，請開始完成。"

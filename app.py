@@ -7,16 +7,17 @@ from uuid import uuid4
 import streamlit as st
 from streamlit_calendar import calendar
 
-from ai_assistant import analyze_learning_records, AIError
+from ai_assistant import AIError, ai_is_configured, analyze_learning_records
 from calendar_events import build_calendar_events
 from exporter import export_learning_markdown
 from storage import (
-    DataError, TZ, add_availability, add_event, add_task_to_storage,
-    create_id, data_path, load_json, set_task_status, update_availability,
-    update_event, update_json,
+    DataError, TZ, add_availabilities, add_event, add_task_to_storage,
+    clear_task_availability_preference, create_id, data_path,
+    delete_availability, load_json, update_availability, update_event,
+    update_json, update_task,
 )
 from tracker import calculate_response_rate, calculate_task_progress
-from plan_bridge import normalize_plan_result
+from plan_bridge import merge_user_plan, normalize_plan_result
 
 USER_ID = "demo_user_001"  # MVP：單一測試使用者；正式多人版須加入登入機制
 WEEKDAYS = {1: "週一", 2: "週二", 3: "週三", 4: "週四", 5: "週五", 6: "週六", 7: "週日"}
@@ -224,6 +225,22 @@ with pages[0]:
             "接收讀書時段開始提醒",
             value=current_user.get("study_reminders_enabled", False),
         )
+        ai_configured = ai_is_configured()
+        ai_after_class_enabled = st.checkbox(
+            "同意使用 AI 整理課後筆記並建議複習任務",
+            value=current_user.get("ai_after_class_enabled") is True,
+            key="ai_after_class_enabled",
+            disabled=(
+                not ai_configured
+                and current_user.get("ai_after_class_enabled") is not True
+            ),
+        )
+        st.caption(
+            "啟用後，課程名稱、你輸入的筆記與 1–5 自評進度會傳送至 OpenAI；"
+            "AI 建議的任務仍須由你在 LINE 確認才會新增。OpenAI API 可能依帳戶方案計費。"
+        )
+        if not ai_configured:
+            st.caption("設定 OPENAI_API_KEY 與 OPENAI_MODEL 後，才能啟用課後 AI 整理。")
         if st.form_submit_button("儲存提醒設定"):
             def save_reminder_settings():
                 user = {
@@ -231,6 +248,7 @@ with pages[0]:
                     "user_id": USER_ID,
                     "reminders_enabled": class_reminders,
                     "study_reminders_enabled": study_reminders,
+                    "ai_after_class_enabled": ai_after_class_enabled,
                 }
                 update_json(
                     data_path("users"),
@@ -241,19 +259,99 @@ with pages[0]:
             safely(save_reminder_settings, "提醒設定已儲存")
 
     st.subheader("新增可用讀書時段")
+    now = datetime.now(TZ)
+    slot_date = st.date_input(
+        "日期",
+        value=now.date(),
+        min_value=now.date(),
+        key="new_slot_date",
+    )
+    existing_ranges = []
+    for slot in slots:
+        if slot["date"] != slot_date.isoformat():
+            continue
+        start = time.fromisoformat(slot["start_time"])
+        start_minute = start.hour * 60 + start.minute
+        existing_ranges.append((start_minute, start_minute + slot["available_minutes"]))
+    class_ranges = []
+    for course in courses:
+        if course["weekday"] != slot_date.isoweekday():
+            continue
+        start = time.fromisoformat(course["start_time"])
+        end = time.fromisoformat(course["end_time"])
+        class_ranges.append(
+            (start.hour * 60 + start.minute, end.hour * 60 + end.minute)
+        )
+    current_minute = now.hour * 60 + now.minute
+    if now.second or now.microsecond:
+        current_minute += 1
+    day_parts = [
+        ("凌晨／清晨", 0, 360),
+        ("上午", 360, 720),
+        ("下午", 720, 1080),
+        ("晚上", 1080, 1440),
+    ]
+    selected_blocks = []
     with st.form("add_slot", clear_on_submit=True):
-        a, b, c = st.columns(3)
-        with a:
-            slot_date = st.date_input("日期", value=datetime.now(TZ).date())
-        with b:
-            slot_start = st.time_input("開始時間", value=time(19, 0), step=900, key="slot_start")
-        with c:
-            minutes = st.number_input("可用分鐘", min_value=1, max_value=1440, value=90, step=15)
+        st.caption("勾選有空的半小時區塊；連續區塊會自動合併成一個讀書時段。")
+        st.caption("灰色區塊代表已過去、與課程衝突或已設定為可用的時間。")
+        time_columns = st.columns(len(day_parts))
+        for column, (part_name, part_start, part_end) in zip(time_columns, day_parts):
+            with column:
+                st.markdown(f"**{part_name}**")
+                for start_minute in range(part_start, part_end, 30):
+                    end_minute = start_minute + 30
+                    occupied = any(
+                        start_minute < occupied_end and occupied_start < end_minute
+                        for occupied_start, occupied_end in existing_ranges + class_ranges
+                    )
+                    past = (
+                        slot_date == now.date()
+                        and start_minute < current_minute
+                    )
+                    start_label = f"{start_minute // 60:02d}:{start_minute % 60:02d}"
+                    end_label = f"{end_minute // 60:02d}:{end_minute % 60:02d}"
+                    checkbox_key = (
+                        f"new_slot_block_{slot_date.isoformat()}_{start_label}"
+                    )
+                    checked = st.checkbox(
+                        f"{start_label}–{end_label}",
+                        key=checkbox_key,
+                        disabled=occupied or past,
+                    )
+                    if checked and not (occupied or past):
+                        selected_blocks.append(start_minute)
         if st.form_submit_button("新增時段"):
-            new_slot = {"availability_id": create_id("slot"), "user_id": USER_ID,
-                        "date": slot_date.isoformat(), "start_time": slot_start.strftime("%H:%M"),
-                        "available_minutes": int(minutes)}
-            safely(lambda: add_availability(new_slot), "讀書時段已儲存")
+            if not selected_blocks:
+                st.error("請至少勾選一個半小時區塊")
+            else:
+                sorted_blocks = sorted(selected_blocks)
+                windows = []
+                window_start = previous_block = sorted_blocks[0]
+                for block_start in sorted_blocks[1:]:
+                    if block_start == previous_block + 30:
+                        previous_block = block_start
+                        continue
+                    windows.append((window_start, previous_block - window_start + 30))
+                    window_start = previous_block = block_start
+                windows.append((window_start, previous_block - window_start + 30))
+                new_slots = []
+                for start_minute, duration in windows:
+                    new_slots.append(
+                        {
+                            "availability_id": create_id("slot"),
+                            "user_id": USER_ID,
+                            "date": slot_date.isoformat(),
+                            "start_time": (
+                                f"{start_minute // 60:02d}:{start_minute % 60:02d}"
+                            ),
+                            "available_minutes": duration,
+                        }
+                    )
+                safely(
+                    lambda: add_availabilities(new_slots),
+                    f"已新增 {len(new_slots)} 個讀書時段",
+                )
 
     st.subheader("修改既有可用讀書時段")
     if slots:
@@ -281,6 +379,14 @@ with pages[0]:
             key=f"edit_slot_select_{selected_slot_id}",
         )
         selected_slot = slot_by_id[selected_slot_id]
+        fixed_task_count = sum(
+            task.get("preferred_availability_id") == selected_slot_id
+            for task in own(records["tasks"])
+        )
+        if fixed_task_count:
+            st.warning(
+                f"{fixed_task_count} 個任務固定使用此時段；刪除時會解除固定並清除舊計畫。"
+            )
         with st.form(f"edit_slot_form_{selected_slot_id}"):
             edit_slot_date = st.date_input(
                 "日期",
@@ -301,7 +407,15 @@ with pages[0]:
                 step=15,
                 key=f"edit_slot_minutes_{selected_slot_id}",
             )
-            if st.form_submit_button("儲存時段修改"):
+            confirm_delete = st.checkbox(
+                "我確認要刪除此時段",
+                key=f"confirm_delete_slot_{selected_slot_id}",
+            )
+            save_slot_clicked = st.form_submit_button("儲存時段修改")
+            delete_slot_clicked = st.form_submit_button(
+                "刪除時段", type="secondary"
+            )
+            if save_slot_clicked:
                 updated_slot = {
                     **selected_slot,
                     "date": edit_slot_date.isoformat(),
@@ -320,6 +434,27 @@ with pages[0]:
                     )
 
                 safely(save_slot_changes, "時段已更新；請重新產生讀書計畫")
+            elif delete_slot_clicked:
+                if not confirm_delete:
+                    st.error("請先勾選確認刪除此時段")
+                else:
+                    def delete_selected_slot():
+                        update_json(
+                            data_path("plan"),
+                            lambda rows: [
+                                row for row in rows
+                                if row.get("user_id") != USER_ID
+                            ],
+                        )
+                        clear_task_availability_preference(
+                            selected_slot_id, USER_ID
+                        )
+                        delete_availability(selected_slot_id, USER_ID)
+
+                    safely(
+                        delete_selected_slot,
+                        "時段已刪除；請重新產生讀書計畫",
+                    )
     else:
         st.info("新增第一個可用時段後，即可在此修改時段。")
 
@@ -351,12 +486,62 @@ with pages[1]:
     if tasks:
         st.dataframe([{"任務": x["title"], "科目": x["subject"], "期限": x["deadline"],
                        "所需分鐘": x["estimated_minutes"], "狀態": x["status"]} for x in tasks], hide_index=True)
-        with st.form("task_status"):
-            task_id = st.selectbox("更新任務狀態", [t["task_id"] for t in tasks],
-                                   format_func=lambda tid: next(t["title"] for t in tasks if t["task_id"] == tid))
-            new_status = st.radio("新狀態", ["pending", "completed"], horizontal=True)
-            if st.form_submit_button("更新狀態"):
-                safely(lambda: set_task_status(task_id, new_status), "任務狀態已更新")
+        st.subheader("修改任務名稱、狀態與期限")
+        task_by_id = {task["task_id"]: task for task in tasks}
+
+        def task_label(task_id: str) -> str:
+            task = task_by_id[task_id]
+            return f"{task['title']}｜{task['subject']}｜期限 {task['deadline']}"
+
+        selected_task_id = st.selectbox(
+            "選擇要修改的任務",
+            list(task_by_id),
+            format_func=task_label,
+            key="edit_task_select",
+        )
+        selected_task = task_by_id[selected_task_id]
+        with st.form(f"edit_task_form_{selected_task_id}"):
+            updated_title = st.text_input(
+                "任務名稱",
+                value=selected_task["title"],
+                key=f"edit_task_title_{selected_task_id}",
+            )
+            updated_deadline = st.date_input(
+                "Deadline",
+                value=date.fromisoformat(selected_task["deadline"]),
+                key=f"edit_task_deadline_{selected_task_id}",
+            )
+            updated_status = st.radio(
+                "任務狀態",
+                ["pending", "completed"],
+                index=["pending", "completed"].index(selected_task["status"]),
+                horizontal=True,
+                key=f"edit_task_status_{selected_task_id}",
+            )
+            if st.form_submit_button("儲存任務修改"):
+                updated_task = {
+                    **selected_task,
+                    "title": updated_title.strip(),
+                    "deadline": updated_deadline.isoformat(),
+                    "status": updated_status,
+                }
+
+                def save_task_changes():
+                    update_task(updated_task)
+                    update_json(
+                        data_path("plan"),
+                        lambda rows: [
+                            row for row in rows
+                            if row.get("user_id") != USER_ID
+                        ],
+                    )
+
+                safely(
+                    save_task_changes,
+                    "任務名稱、期限與狀態已更新；請重新產生讀書計畫",
+                )
+    else:
+        st.info("新增第一項任務後，即可在此修改期限與狀態。")
 
     st.subheader("讀書排程")
     st.caption("此頁已預留 B 的 scheduler.make_plan(tasks, availability, previous_plan, now) 串接介面。")
@@ -369,21 +554,10 @@ with pages[1]:
             try:
                 plan_result = make_plan(tasks, own(records["availability"]), own(records["plan"]), datetime.now(TZ))
                 new_plan = normalize_plan_result(plan_result, USER_ID)
-                def replace_plan(rows: list) -> list:
-                    old_plan = {
-                        row.get("task_id"): row for row in rows
-                        if row.get("user_id") == USER_ID
-                    }
-                    for row in new_plan:
-                        old = old_plan.get(row.get("task_id"), {})
-                        if (
-                            row.get("unscheduled_alert_id")
-                            and row.get("unscheduled_alert_id") == old.get("unscheduled_alert_id")
-                            and old.get("unscheduled_alerted")
-                        ):
-                            row["unscheduled_alerted"] = True
-                    return [row for row in rows if row.get("user_id") != USER_ID] + new_plan
-                update_json(data_path("plan"), replace_plan)
+                update_json(
+                    data_path("plan"),
+                    lambda rows: merge_user_plan(rows, USER_ID, new_plan),
+                )
                 st.success("讀書計畫已重新產生")
                 st.rerun()
             except (DataError, ValueError) as exc:
@@ -415,6 +589,36 @@ with pages[2]:
         for row in notes:
             with st.expander(f"{row.get('class_date')}｜{courses.get(row.get('event_id'), '未知課程')}"):
                 st.write(row.get("content", ""))
+                if row.get("progress") is not None:
+                    st.caption(f"自評理解進度：{row['progress']}/5")
+                analysis = row.get("ai_analysis", {})
+                if analysis:
+                    st.markdown("**AI 整理摘要**")
+                    st.write(analysis.get("summary", ""))
+                    if analysis.get("key_points"):
+                        st.markdown("**課堂重點**")
+                        for point in analysis["key_points"]:
+                            st.markdown(f"- {point}")
+                    if analysis.get("unresolved_questions"):
+                        st.markdown("**待釐清問題**")
+                        for question in analysis["unresolved_questions"]:
+                            st.markdown(f"- {question}")
+                    if analysis.get("suggested_task"):
+                        st.markdown("**AI 建議複習任務**")
+                        st.write(
+                            f"{analysis['suggested_task']} "
+                            f"（約 {analysis.get('estimated_minutes', '未提供')} 分鐘）"
+                        )
+                        task_status = (
+                            "已加入讀書任務"
+                            if any(
+                                task.get("source_feedback_id") == row.get("feedback_id")
+                                and task.get("source") == "ai_confirmed"
+                                for task in own(records["tasks"])
+                            )
+                            else "尚未加入讀書任務"
+                        )
+                        st.caption(task_status)
                 st.caption(f"回覆時間：{row.get('received_at')}｜來源：{row.get('source')}")
     else:
         st.info("尚無真實 LINE 回饋。須待 B 的 LINE Webhook 串接後才會顯示資料。")

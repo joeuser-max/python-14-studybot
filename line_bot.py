@@ -3,18 +3,23 @@ import hashlib
 import hmac
 import json
 import os
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 from zoneinfo import ZoneInfo
 
 import requests
 from flask import Flask, abort, request
 
+from ai_assistant import AIError, organize_class_feedback
+from plan_bridge import merge_user_plan, normalize_plan_result
+from scheduler import make_plan
 from storage import (
     DataError,
+    add_task_to_storage,
     create_id,
     data_path,
     load_json,
     save_feedback as storage_save_feedback,
+    update_feedback_analysis,
     update_json,
 )
 
@@ -30,6 +35,16 @@ WEEKDAYS = {
     "週日": 7, "星期日": 7, "星期天": 7, "7": 7,
 }
 WEEKDAY_CHOICES = ["週一", "週二", "週三", "週四", "週五", "週六", "週日"]
+PROGRESS_CHOICES = ["1", "2", "3", "4", "5"]
+PROGRESS_LABELS = {
+    1: "目前還不太理解",
+    2: "大部分還不熟悉",
+    3: "部分理解，仍有疑問",
+    4: "大致理解，少數地方需複習",
+    5: "很有把握",
+}
+AI_TASK_ACCEPT = "加入讀書任務"
+AI_TASK_SKIP = "先不用"
 DEMO_USER_ID = "demo_user_001"
 
 
@@ -176,12 +191,14 @@ def _bind_demo_user(line_user_id: str) -> None:
             user["line_user_id"] = line_user_id
             user.setdefault("reminders_enabled", True)
             user.setdefault("study_reminders_enabled", False)
+            user.setdefault("ai_after_class_enabled", False)
             return rows
         return rows + [{
             "user_id": DEMO_USER_ID,
             "line_user_id": line_user_id,
             "reminders_enabled": True,
             "study_reminders_enabled": False,
+            "ai_after_class_enabled": False,
         }]
     update_json(data_path("users"), bind)
 
@@ -200,6 +217,72 @@ def _find_class_reminder(user_id: str, event_id: str, class_date: str) -> str:
         None,
     )
     return row.get("reminder_id", "") if row else ""
+
+
+def _schedule_confirmed_ai_task(
+    user_id: str,
+    pending: dict,
+    now: datetime,
+) -> tuple[dict, dict]:
+    tasks = load_json(data_path("tasks"))
+    task = next(
+        (
+            row for row in tasks
+            if row.get("user_id") == user_id
+            and row.get("source_feedback_id") == pending["feedback_id"]
+            and row.get("source") == "ai_confirmed"
+        ),
+        None,
+    )
+    if task is None:
+        deadline = (
+            date.fromisoformat(pending["class_date"]) + timedelta(days=7)
+        ).isoformat()
+        task = {
+            "task_id": create_id("task"),
+            "user_id": user_id,
+            "subject": pending["course_title"],
+            "title": pending["suggested_task"],
+            "deadline": deadline,
+            "estimated_minutes": pending["estimated_minutes"],
+            "status": "pending",
+            "preferred_availability_id": "",
+            "source_feedback_id": pending["feedback_id"],
+            "source": "ai_confirmed",
+        }
+        add_task_to_storage(task)
+        tasks = load_json(data_path("tasks"))
+
+    slots = load_json(data_path("availability"))
+    previous_plan = load_json(data_path("plan"))
+    own_tasks = [row for row in tasks if row.get("user_id") == user_id]
+    own_slots = [row for row in slots if row.get("user_id") == user_id]
+    own_plan = [row for row in previous_plan if row.get("user_id") == user_id]
+    plan_result = make_plan(own_tasks, own_slots, own_plan, now)
+    new_plan = normalize_plan_result(plan_result, user_id)
+    update_json(
+        data_path("plan"),
+        lambda rows: merge_user_plan(rows, user_id, new_plan),
+    )
+    task_plan = next(
+        (row for row in new_plan if row.get("task_id") == task["task_id"]),
+        {},
+    )
+    return task, task_plan
+
+
+def _format_class_feedback_analysis(analysis: dict, progress: int) -> str:
+    lines = [
+        f"AI 已整理這堂課（你的自評：{progress}/5｜{PROGRESS_LABELS[progress]}）",
+        f"摘要：{analysis['summary']}",
+    ]
+    if analysis["key_points"]:
+        lines.append("課堂重點：")
+        lines.extend(f"・{point}" for point in analysis["key_points"])
+    if analysis["unresolved_questions"]:
+        lines.append("待釐清：")
+        lines.extend(f"・{question}" for question in analysis["unresolved_questions"])
+    return "\n".join(lines)
 
 
 def _handle_text_event(event: dict, user: dict, now: datetime) -> bool | None:
@@ -225,6 +308,52 @@ def _handle_text_event(event: dict, user: dict, now: datetime) -> bool | None:
         }
         _set_pending(record)
         reply_line_message(reply_token, "請選擇要補筆記的星期（流程 10 分鐘後逾時）。", WEEKDAY_CHOICES)
+        return
+
+    if pending and pending.get("stage") == "ai_task_confirmation":
+        if text == AI_TASK_SKIP:
+            _remove_pending(user_id)
+            reply_line_message(reply_token, "已保留整理後的筆記，未新增讀書任務。")
+            return
+        if text != AI_TASK_ACCEPT:
+            reply_line_message(
+                reply_token,
+                "要把 AI 建議加入讀書計畫嗎？期限預設為課後 7 天，之後可在網站修改。",
+                [AI_TASK_ACCEPT, AI_TASK_SKIP],
+            )
+            return
+        try:
+            task, plan_row = _schedule_confirmed_ai_task(user_id, pending, now)
+        except (DataError, ValueError) as exc:
+            reply_line_message(
+                reply_token,
+                f"任務或排程處理失敗：{exc}。可再回覆「{AI_TASK_ACCEPT}」重試。",
+                [AI_TASK_ACCEPT, AI_TASK_SKIP],
+            )
+            return False
+        _remove_pending(user_id)
+        if plan_row.get("status") == "scheduled":
+            slot = next(
+                (
+                    row for row in load_json(data_path("availability"))
+                    if row.get("availability_id") == plan_row.get("availability_id")
+                    and row.get("user_id") == user_id
+                ),
+                {},
+            )
+            reply_line_message(
+                reply_token,
+                f"已新增「{task['title']}」並排入 {slot.get('date')} "
+                f"{slot.get('start_time')}（{task['estimated_minutes']} 分鐘）。"
+                "如需調整期限或時段，請到 ClassPulse 修改後重新排程。",
+            )
+        else:
+            reason = plan_row.get("reason") or "目前沒有合適的可用時段"
+            reply_line_message(
+                reply_token,
+                f"已新增「{task['title']}」，但目前尚未排入：{reason}"
+                "。請到 ClassPulse 調整可用時段或期限後重新排程。",
+            )
         return
 
     if not pending:
@@ -284,7 +413,7 @@ def _handle_text_event(event: dict, user: dict, now: datetime) -> bool | None:
         class_date = match["class_date"]
         event_id = selected["event_id"]
         pending.update({
-            "stage": "note",
+            "stage": "progress",
             "event_id": event_id,
             "class_date": class_date,
             "reminder_id": _find_class_reminder(user_id, event_id, class_date),
@@ -293,7 +422,25 @@ def _handle_text_event(event: dict, user: dict, now: datetime) -> bool | None:
         _set_pending(pending)
         reply_line_message(
             reply_token,
-            f"已選擇 {selected['title']}（{class_date}）。請輸入筆記或疑問；輸入「取消」可放棄。",
+            f"已選擇 {selected['title']}（{class_date}）。請回覆本堂理解進度 1–5："
+            "1=還不太理解，3=部分理解，5=很有把握；輸入「取消」可放棄。",
+            PROGRESS_CHOICES,
+        )
+        return
+
+    if pending.get("stage") == "progress":
+        if text not in PROGRESS_CHOICES:
+            reply_line_message(
+                reply_token,
+                "請回覆 1–5 表示本堂理解進度，或輸入「取消」。",
+                PROGRESS_CHOICES,
+            )
+            return
+        pending.update({"stage": "note", "progress": int(text)})
+        _set_pending(pending)
+        reply_line_message(
+            reply_token,
+            "請輸入這堂課的上課重點筆記或疑問；輸入「取消」可放棄。",
         )
         return
 
@@ -306,6 +453,7 @@ def _handle_text_event(event: dict, user: dict, now: datetime) -> bool | None:
             "reminder_id": pending.get("reminder_id", ""),
             "received_at": now.isoformat(timespec="seconds"),
             "content": text,
+            "progress": pending["progress"],
             "source": "selected",
             "webhook_event_id": event.get("webhookEventId", ""),
         }
@@ -314,9 +462,65 @@ def _handle_text_event(event: dict, user: dict, now: datetime) -> bool | None:
             reply_line_message(reply_token, f"筆記未儲存：{result['error']}")
             return False
         _remove_pending(user_id)
+        if result["deduplicated"]:
+            reply_line_message(reply_token, "這則回饋已存在，未重複儲存。")
+            return
+        if user.get("ai_after_class_enabled") is not True:
+            reply_line_message(reply_token, "筆記與自評進度已儲存。")
+            return
+
+        course = next(
+            (
+                row for row in load_json(data_path("events"))
+                if row.get("user_id") == user_id
+                and row.get("event_id") == pending["event_id"]
+            ),
+            {},
+        )
+        try:
+            analysis = organize_class_feedback(feedback, course.get("title", ""))
+        except AIError as exc:
+            reply_line_message(
+                reply_token,
+                f"筆記與進度已保存，但 AI 整理失敗：{exc}",
+            )
+            return
+        try:
+            update_feedback_analysis(
+                feedback["feedback_id"],
+                user_id,
+                analysis,
+            )
+        except DataError as exc:
+            reply_line_message(
+                reply_token,
+                f"筆記已保存，但 AI 整理結果未能保存：{exc}",
+            )
+            return
+
+        response_text = _format_class_feedback_analysis(
+            analysis,
+            pending["progress"],
+        )
+        if not analysis["suggested_task"]:
+            reply_line_message(reply_token, response_text + "\n目前沒有足夠資訊提出複習任務。")
+            return
+
+        pending.update({
+            "stage": "ai_task_confirmation",
+            "feedback_id": feedback["feedback_id"],
+            "course_title": course["title"],
+            "suggested_task": analysis["suggested_task"],
+            "estimated_minutes": analysis["estimated_minutes"],
+            "expires_at": (now + timedelta(minutes=10)).isoformat(timespec="seconds"),
+        })
+        _set_pending(pending)
         reply_line_message(
             reply_token,
-            "這則回饋已存在，未重複儲存。" if result["deduplicated"] else "筆記已儲存！",
+            response_text
+            + f"\n建議任務：{analysis['suggested_task']}（約 {analysis['estimated_minutes']} 分鐘）。"
+            "\n要加入讀書計畫嗎？期限預設為課後 7 天，可在網站修改。",
+            [AI_TASK_ACCEPT, AI_TASK_SKIP],
         )
 
 
