@@ -118,22 +118,29 @@ py -3.11 -m venv .venv
 - **Channel Access Token**：在 **Messaging API** 頁面簽發，供 Webhook 回覆訊息及 Worker 推播。
 - **綁定碼**：自己設定的一組測試文字，並非 LINE 提供的 Token。不要使用本文件中的佔位文字。
 
-Webhook 啟動前要設定 Channel Secret、Channel Access Token 和綁定碼；Worker 只需要 Channel Access Token。環境變數只作用於目前 PowerShell 視窗及其子程序，因此不同視窗要各自設定。程式不會自動讀取 `.env`。
+Webhook 啟動前要設定 Channel Secret、Channel Access Token 和綁定碼；Worker 也會使用同一份 Channel Access Token。程式會自動讀取專案根目錄的 `.env`，Flask、Worker 和 Streamlit 不需要每個視窗重貼憑證。
 
-在啟動 Webhook 的 PowerShell 視窗設定：
+第一次設定時，在專案資料夾的 PowerShell 執行以下命令，複製範例檔並用記事本編輯：
 
 ```powershell
 Set-Location 'C:\Users\yuzhe\Desktop\程式設計-python期末專案作業\python-14-studybot'
-$env:LINE_CHANNEL_SECRET = Read-Host '請輸入 LINE Channel Secret'
-$env:LINE_CHANNEL_ACCESS_TOKEN = Read-Host '請輸入 LINE Channel Access Token'
-$env:LINE_BINDING_CODE = Read-Host '請輸入你自行設定的綁定碼'
+if (-not (Test-Path '.env')) { Copy-Item '.env.example' '.env' }
+notepad .env
 ```
 
-逐行執行時，PowerShell 顯示提示後再輸入該值並按 Enter；引號中的文字是提示，不是憑證。不要把 Channel Secret、Access Token 或綁定碼貼到聊天、README 或提交 Git。`.env.example` 僅放假值。
+在 `.env` 填入 LINE Developers 中目前有效的值，不要加 PowerShell 的 `$env:` 前綴或把等號右側留空：
+
+```text
+LINE_CHANNEL_SECRET=貼上你的ChannelSecret
+LINE_CHANNEL_ACCESS_TOKEN=貼上你的ChannelAccessToken
+LINE_BINDING_CODE=設定一組不易猜測的測試綁定碼
+```
+
+`.env` 也可選填 `OPENAI_API_KEY` 和 `OPENAI_MODEL` 以啟用課後 AI。存檔後重新啟動 Flask、Worker 和 Streamlit，讓各程序載入新設定。`.env` 已加入 `.gitignore`，不會被 Git 提交；仍是未加密的本機檔案，請勿放在共用／同步資料夾、截圖或分享。`.env.example` 只包含空白欄位，不要把真實憑證放進範例檔。若憑證曾曝光，請先在服務端重新簽發，再把新值存入 `.env`。
 
 ### 5.2 啟動 Webhook
 
-在已設定環境變數的視窗啟動 Flask：
+在專案資料夾啟動 Flask；程式會自動讀取 `.env`：
 
 ```powershell
 .\.venv\Scripts\python.exe -m flask --app line_bot:create_app run --host 0.0.0.0 --port 5000
@@ -198,11 +205,10 @@ LINE 不能直接連到 `localhost`，需用 HTTPS Tunnel 將公網請求轉到�
 
 ### 5.5 啟動常駐提醒 Worker
 
-另開一個 PowerShell 視窗，切到專案資料夾，設定 Channel Access Token 後啟動 Worker：
+另開一個 PowerShell 視窗，切到專案資料夾並啟動 Worker。Worker 會自動讀取相同的 `.env`，不必再貼一次 Token：
 
 ```powershell
 Set-Location 'C:\Users\yuzhe\Desktop\程式設計-python期末專案作業\python-14-studybot'
-$env:LINE_CHANNEL_ACCESS_TOKEN = Read-Host '請輸入 LINE Channel Access Token'
 .\.venv\Scripts\python.exe reminder_worker.py
 ```
 
@@ -234,25 +240,7 @@ $env:LINE_CHANNEL_ACCESS_TOKEN = Read-Host '請輸入 LINE Channel Access Token'
 
 ## 6. 可選：啟用內建 AI 課後整理
 
-AI 整理不是記錄課後回饋或手動排程的必要條件。若要讓 LINE 回饋後自動整理筆記，請在**啟動 Flask 與 Streamlit 的各自 PowerShell 視窗**分別設定 OpenAI API Key 和支援 Structured Outputs 的模型名稱，再啟動程式。以下片段在兩個視窗都要執行：
-
-```powershell
-$secureKey = Read-Host '請輸入 OpenAI API Key' -AsSecureString
-$env:OPENAI_API_KEY = [System.Net.NetworkCredential]::new('', $secureKey).Password
-$env:OPENAI_MODEL = Read-Host '請輸入支援 Structured Outputs 的模型名稱'
-```
-
-第一個視窗接著啟動 Flask（如已在執行，先停止並重新啟動以載入環境變數）：
-
-```powershell
-.\.venv\Scripts\python.exe -m flask --app line_bot:create_app run --host 0.0.0.0 --port 5000
-```
-
-第二個視窗啟動 Streamlit：
-
-```powershell
-.\.venv\Scripts\python.exe -m streamlit run app.py
-```
+AI 整理不是記錄課後回饋或手動排程的必要條件。若要讓 LINE 回饋後自動整理筆記，請在 `.env` 填入 OpenAI API Key 和支援 Structured Outputs 的模型名稱，然後重新啟動 Flask 與 Streamlit。
 
 在 Streamlit「LINE 提醒設定」勾選並儲存「同意使用 AI 整理課後筆記並建議複習任務」。每次回饋只會把課程名稱、筆記文字及使用者自評進度送至 OpenAI，不會傳送 LINE User ID 或資料 ID。OpenAI API 可能依帳戶方案計費。AI 建議的複習任務必須先由使用者在 LINE 確認；確認後才新增，接著由既有規則式 scheduler 依期限、已固定任務與可用時段安排，不是讓模型直接改動行事曆。預設 Deadline 為課後 7 天，可在 Streamlit 修改。
 
@@ -280,6 +268,7 @@ $env:OPENAI_MODEL = Read-Host '請輸入支援 Structured Outputs 的模型名�
 - **`localhost:8501` 無法開啟**：確認 Streamlit 視窗沒有錯誤並仍在執行；若提示埠號已使用，先關閉舊程序或改用 `--server.port 8502`。
 - **`ngrok` 無法辨識**：安裝後重新開啟 PowerShell／VS Code，讓 PATH 更新；確認 Flask 正在 `5000` 埠，並以 `ngrok http 5000` 啟動 Tunnel。
 - **ngrok 顯示 `ERR_NGROK_121` 或版本過舊**：執行 `ngrok update`，再執行 `ngrok version` 確認已更新。ngrok Authtoken 無效時，從 ngrok Dashboard 重新取得並執行 `ngrok config add-authtoken`；不要使用 LINE Token 代替。
+- **Flask 日誌顯示 `POST /Webhook 404`**：路徑大小寫不同。程式只註冊小寫 `/webhook`；請在 LINE Developers 將 Webhook URL 改成 `https://你的-ngrok-網址/webhook`（全小寫）後再按 **Verify**。此時請求尚未進入簽章驗證；若改好後變成 401，再依下方檢查 Channel Secret。
 - **LINE Verify 顯示 401**：代表請求已到 Flask，但簽章驗證失敗。確認 `LINE_CHANNEL_SECRET` 是同一個 Messaging API Channel 的 **Basic settings → Channel secret**，不是 Channel Access Token；設定環境變數後必須重新啟動 Flask，因程式在啟動時讀取 Secret。確認 URL 使用目前 Tunnel 網址並以 `/webhook` 結尾。
 - **LINE 沒收到提醒**：確認 Worker 還在執行、Access Token 正確、使用者已綁定，Streamlit 的對應提醒開關已啟用；讀書任務需是 pending 且目前排程仍指向該時段。
 - **排程顯示未排入**：確認時段日期在未來、Deadline 不早於時段結束、時段長度足夠且沒有重疊；頁面會列出原因。

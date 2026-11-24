@@ -14,9 +14,11 @@ from typing import Callable
 from uuid import uuid4
 from zoneinfo import ZoneInfo
 
+from dotenv import load_dotenv
 from filelock import FileLock, Timeout
 
 ROOT = Path(__file__).resolve().parent
+load_dotenv(ROOT / ".env")
 DATA_DIR = Path(os.environ.get("CLASSPULSE_DATA_DIR", str(ROOT / "data"))).resolve()
 FILES = {
     "events": "events.json", "tasks": "tasks.json", "availability": "availability.json",
