@@ -192,7 +192,20 @@ def place_task(user_id: str, task_id: str, start: str | datetime, end: str | dat
 
 
 def unassign_task(user_id: str, task_id: str, now: datetime | None = None) -> list[dict]:
-    """回到待排區，不立即重新分配；可另行選擇恢復自動排程。"""
+    """回到待排區；已開始或過去的安排不可透過時間表任意抹除。"""
+    now = (now or datetime.now(TZ)).astimezone(TZ)
+    current_plan = storage.load_json(storage.data_path("plan"))
+    current_slots = storage.load_json(storage.data_path("availability"))
+    scheduled = next((r for r in current_plan if r.get("user_id") == user_id
+                      and r.get("task_id") == task_id and r.get("status") == "scheduled"), None)
+    if scheduled:
+        slot = next((s for s in current_slots
+                     if s.get("availability_id") == scheduled.get("availability_id")), None)
+        if slot:
+            started = datetime.combine(date.fromisoformat(slot["date"]),
+                                       time.fromisoformat(slot["start_time"]), TZ)
+            if started <= now:
+                raise storage.DataError("已開始或過去的任務時間不可拖動或取消")
     tasks = storage.load_json(storage.data_path("tasks"))
     target = next((t for t in tasks if t.get("task_id") == task_id
                    and t.get("user_id") == user_id), None)
