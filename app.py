@@ -62,7 +62,7 @@ with st.sidebar:
     st.divider()
     demo_mode = st.toggle("展示模式", value=False, key="classpulse_demo_mode")
     if demo_mode:
-        st.caption("虛構課表與 Mock 回覆，不對外發送訊息。")
+        st.caption("展示課表參考提供的截圖；完成數據為模擬範例，不對外發送 LINE。")
 
 select_demo_storage(demo_mode)
 if demo_mode:
@@ -480,14 +480,24 @@ def show_timesheet_confirmation() -> None:
         for course in proposal["classes"]:
             st.write(f"**衝突課程：{course['title']}**")
             st.caption(f"{course['start'][11:16]}–{course['end'][11:16]}")
-        st.write("是否仍要覆蓋這段上課時間？")
-        reason = st.radio(
-            "請選擇原因", ("請假", "翹課", "停課"), index=None,
-            key="cp_override_" + task["task_id"] + "_" +
+        choice = st.radio(
+            "重疊部分是否要覆蓋？",
+            ("保留原課程（不覆蓋）", "覆蓋課程時段（需說明原因）"),
+            index=None,
+            key="cp_override_choice_" + task["task_id"] + "_" +
                 proposal["start"].strftime("%Y%m%d%H%M") + "_" +
                 proposal["end"].strftime("%H%M"),
         )
-        st.caption("只會儲存你的個人安排，不會向學校提出請假或修改 ee-class。")
+        if choice == "覆蓋課程時段（需說明原因）":
+            reason = st.radio(
+                "請選擇原因", ("請假", "翹課", "停課"), index=None,
+                key="cp_override_" + task["task_id"] + "_" +
+                    proposal["start"].strftime("%Y%m%d%H%M") + "_" +
+                    proposal["end"].strftime("%H%M"),
+            )
+            st.caption("只會儲存你的個人安排，不會向學校提出請假或修改 ee-class。")
+        elif choice == "保留原課程（不覆蓋）":
+            st.info("選擇下方「不覆蓋，取消調整」，原課表及原讀書安排都不會改變。")
     else:
         st.success("沒有與固定課程重疊。")
     a, b = st.columns(2)
@@ -500,7 +510,8 @@ def show_timesheet_confirmation() -> None:
             st.session_state.pop("cp_pending_timesheet", None)
             refresh_timesheet()
         saved(commit_placement, "已儲存任務安排")
-    if b.button("取消變更", key="cp_placement_cancel"):
+    if b.button("不覆蓋，取消調整" if proposal["classes"] else "取消變更",
+                key="cp_placement_cancel"):
         st.session_state.pop("cp_pending_timesheet", None)
         refresh_timesheet()
         st.rerun()
