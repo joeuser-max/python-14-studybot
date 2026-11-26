@@ -234,9 +234,9 @@ def calendar_change_candidate(value: dict, tasks: list[dict]) -> dict | None:
     task = next((t for t in tasks if t.get("task_id") == task_id), None)
     if task is None:
         return None
+    old_event = value.get("eventChange", {}).get("oldEvent", {})
     if event.get("allDay"):
-        before = value.get("eventChange", {}).get("oldEvent", {})
-        if before.get("allDay") is False:
+        if old_event.get("allDay") is False:
             return {"kind": "unschedule", "task_id": task_id}
         return None
     start = event.get("start")
@@ -244,8 +244,11 @@ def calendar_change_candidate(value: dict, tasks: list[dict]) -> dict | None:
         return None
     end = event.get("end")
     beginning = as_local(start)
-    ending = as_local(end) if end else beginning + timedelta(
-        minutes=int(task["estimated_minutes"]))
+    # 全天待排 → 有時間的格子時，採原任務估時，下一次可直接拉長。
+    ending = (beginning + timedelta(minutes=int(task["estimated_minutes"]))
+              if old_event.get("allDay") is True
+              else as_local(end) if end
+              else beginning + timedelta(minutes=int(task["estimated_minutes"])))
     return {"kind": "place", "task_id": task_id, "start": beginning, "end": ending}
 
 
