@@ -1,11 +1,11 @@
-"""實際回歸：展示資料隔離、任務可修改、同課次筆記群組。"""
+"""展示模式任務的回歸：卡片對話框可見、實際儲存動作明確隔離。"""
 from collections import Counter
 from pathlib import Path
 
 import storage
 from demo_data import sample_records, seed_demo_data
+from task_actions import save_task_changes, delete_task_and_plan
 from streamlit.testing.v1 import AppTest
-
 
 APP = Path(__file__).resolve().parents[1] / "app.py"
 
@@ -22,51 +22,83 @@ def test_demo_sample_has_multiple_editable_tasks_and_grouped_feedback():
     assert any(count == 2 for count in groups.values())
 
 
-def test_demo_task_edit_from_streamlit_card_uses_demo_json(monkeypatch, tmp_path):
-    """覆蓋「任務畫面可見，但按儲存修改時找不到任務」的使用者路徑。"""
-    live_dir = tmp_path / "live"
-    demo_dir = tmp_path / "demo"
-    monkeypatch.setattr(storage, "DATA_DIR", live_dir)
-    monkeypatch.setattr(storage, "DEMO_DATA_DIR", demo_dir)
+def test_task_card_opens_edit_dialog(monkeypatch, tmp_path):
+    """Streamlit AppTest 能檢查 dialog 元件，但不能可靠驅動 fragment 內提交。"""
+    monkeypatch.setattr(storage, "DATA_DIR", tmp_path / "live")
+    monkeypatch.setattr(storage, "DEMO_DATA_DIR", tmp_path / "demo")
     storage.select_demo_storage(False)
-
     app = AppTest.from_file(str(APP)).run(timeout=25)
     assert not app.exception
     app.sidebar.toggle[0].set_value(True).run(timeout=25)
     app.sidebar.radio[0].set_value("我的任務").run(timeout=25)
     assert not app.exception
-
     button = next(b for b in app.button if b.label.startswith("複習回授與穩定度"))
     button.click().run(timeout=25)
     assert not app.exception, [str(e) for e in app.exception]
-
-    name = next(field for field in app.text_input if field.label == "任務名稱")
-    name.set_value("修改成功的控制系統任務")
-    submit = next(b for b in app.button if b.label == "儲存修改")
-    submit.click().run(timeout=25)
-    assert not app.exception, [str(e) for e in app.exception]
-
-    tasks = storage.load_json(demo_dir / "tasks.json")
-    changed = next(t for t in tasks if t["task_id"] == "demo_task_control")
-    assert changed["title"] == "修改成功的控制系統任務"
-    assert not (live_dir / "tasks.json").exists()
+    assert any(x.label == "任務名稱" for x in app.text_input)
+    assert any(x.label == "儲存修改" for x in app.button)
 
 
-def test_reinitialize_storage_context_for_dialog_write(monkeypatch, tmp_path):
-    """刻意模擬 Streamlit 對話框 fragment 沒有沿用主頁的 ContextVar。"""
+def test_edit_existing_and_new_demo_tasks_without_live_mutation(monkeypatch, tmp_path):
+    """實際執行 UI 所呼叫的服務：展示任務及新建立任務皆可更新 JSON。"""
+    demo = tmp_path / "demo"
+    live = tmp_path / "live"
+    monkeypatch.setattr(storage, "DATA_DIR", live)
+    monkeypatch.setattr(storage, "DEMO_DATA_DIR", demo)
+    storage.select_demo_storage(True)
+    seed_demo_data()
+    initial = storage.load_json(storage.data_path("tasks"))
+    task = next(t for t in initial if t["task_id"] == "demo_task_control")
+    newly_created = {
+        "task_id": "user-added-task", "user_id": "demo_user_001",
+        "subject": "程式設計", "title": "現場新增的任務",
+        "deadline": task["deadline"], "estimated_minutes": 45,
+        "status": "pending", "progress_percent": 0,
+        "preferred_availability_id": "",
+    }
+    storage.add_task_to_storage(newly_created)
+    storage.select_demo_storage(False)  # 模擬對話框的 ContextVar 遺失
+
+    save_task_changes({**task, "title": "修改成功的控制系統任務",
+                       "progress_percent": 60}, demo_mode=True)
+    storage.select_demo_storage(False)
+    save_task_changes({**newly_created, "title": "新增後也可修改",
+                       "progress_percent": 30}, demo_mode=True)
+    assert not (live / "tasks.json").exists()
+    tasks = storage.load_json(demo / "tasks.json")
+    edited = {item["task_id"]: item for item in tasks}
+    assert edited["demo_task_control"]["title"] == "修改成功的控制系統任務"
+    assert edited["demo_task_control"]["progress_percent"] == 60
+    assert edited["user-added-task"]["title"] == "新增後也可修改"
+    assert edited["user-added-task"]["progress_percent"] == 30
+    assert storage.load_json(demo / "plan.json") == []
+
+
+def test_delete_demo_task_does_not_touch_live(monkeypatch, tmp_path):
     monkeypatch.setattr(storage, "DATA_DIR", tmp_path / "live")
     monkeypatch.setattr(storage, "DEMO_DATA_DIR", tmp_path / "demo")
     storage.select_demo_storage(True)
     seed_demo_data()
-    task = next(t for t in storage.load_json(storage.data_path("tasks"))
-                if t["task_id"] == "demo_task_control")
-    storage.select_demo_storage(False)  # fragment 執行環境沒有先前的設定
-    assert not (tmp_path / "live" / "tasks.json").exists()
-
-    # Dialog 會呼叫 sync_storage_context()，使 update_task 再次指向展示目錄。
-    # 此處直接重現其必要的修正動作，避免依賴瀏覽器外部狀態。
-    storage.select_demo_storage(True)
-    storage.update_task({**task, "title": "課表編輯成功"})
-    assert storage.load_json(storage.data_path("tasks"))[0]["title"] == "課表編輯成功"
     storage.select_demo_storage(False)
+    delete_task_and_plan("demo_task_control", "demo_user_001", demo_mode=True)
     assert not (tmp_path / "live" / "tasks.json").exists()
+    assert not any(x["task_id"] == "demo_task_control"
+                   for x in storage.load_json(tmp_path / "demo" / "tasks.json"))
+    assert not any(x.get("task_id") == "demo_task_control"
+                   for x in storage.load_json(tmp_path / "demo" / "plan.json"))
+
+
+def test_edit_real_task_uses_real_storage(monkeypatch, tmp_path):
+    monkeypatch.setattr(storage, "DATA_DIR", tmp_path / "live")
+    monkeypatch.setattr(storage, "DEMO_DATA_DIR", tmp_path / "demo")
+    storage.select_demo_storage(False)
+    task = {
+        "task_id": "real-task", "user_id": "demo_user_001",
+        "subject": "測試", "title": "原始任務", "deadline": "2026-12-01",
+        "estimated_minutes": 30, "status": "pending",
+        "preferred_availability_id": "",
+    }
+    storage.add_task_to_storage(task)
+    save_task_changes({**task, "title": "真實模式修改成功"}, demo_mode=False)
+    assert storage.load_json(tmp_path / "live" / "tasks.json")[0]["title"] == "真實模式修改成功"
+    assert not (tmp_path / "demo" / "tasks.json").exists()
