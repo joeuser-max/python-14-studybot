@@ -61,3 +61,16 @@ def test_slot_to_event_interval():
     start, end = task_calendar_event(task, slot)
     assert start.tzinfo == TZ
     assert end - start == timedelta(minutes=60)
+
+
+def test_ics_includes_user_declared_class_overlap_reason():
+    tasks = [{"task_id": "t1", "title": "複習", "subject": "控制系統",
+              "deadline": "2026-12-02", "status": "pending",
+              "estimated_minutes": 45}]
+    slots = [{"availability_id": "manual1", "date": "2026-11-27",
+              "start_time": "09:30", "available_minutes": 45}]
+    plan = [{"task_id": "t1", "availability_id": "manual1",
+             "status": "scheduled", "class_override": "請假"}]
+    ics = export_calendar_ics([], tasks, slots, plan, NOW).decode("utf-8")
+    assert "本人標註：請假" in ics
+    assert "DTSTART:20261127T013000Z" in ics
