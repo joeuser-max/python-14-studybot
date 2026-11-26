@@ -6,23 +6,56 @@ ClassPulse 將課後筆記、AI 建議、讀書任務和時間安排連成一條
 
 ## 快速啟動網站
 
-需 Python 3.11 以上。先 Clone 專案，在專案根目錄執行：
+**先確認 Terminal 位於專案目錄！** 如果畫面顯示 `~ %`，代表你在 Mac 使用者主目錄，直接輸入 `pip install -r requirements.txt` 會找不到檔案。只有 `cd` 到包含 `app.py`、`requirements.txt` 的專案資料夾，才能正確啟動。
 
-### macOS／Linux
+### macOS：第一次下載與啟動（推薦）
 
-    python3 -m venv .venv
-    source .venv/bin/activate
-    python -m pip install -r requirements.txt
-    python -m streamlit run app.py
+開啟 Terminal，整段貼上：
+
+```bash
+git clone https://github.com/joeuser-max/python-14-studybot.git ~/ClassPulse-Demo
+bash ~/ClassPulse-Demo/start_mac.sh
+```
+
+`start_mac.sh` 會自動切換到專案根目錄、建立專案專用 `.venv`、必要時安裝套件，然後啟動 Streamlit。Mac 瀏覽器開啟 **http://localhost:8501**。不用預先安裝 LINE 或 OpenAI 憑證就可以體驗展示模式。
+
+**以後再次開啟：**只需執行 `bash ~/ClassPulse-Demo/start_mac.sh`；如果要取得新版本，先 `cd ~/ClassPulse-Demo && git pull --ff-only`。停止網站按 `Control + C`。
+
+如果顯示 `fatal: destination path ... already exists`，代表已下載過，直接執行上面「再次開啟」的指令即可。如果你已經將專案放在另一個資料夾，也可以從 Finder 將該資料夾拖曳到 Terminal 的 `cd ` 後面，或先 `pwd` 和 `ls` 確認資料夾位置。
+
+### macOS／Linux：手動啟動
+
+```bash
+# 先到你已經 Clone 的專案根目錄
+cd ~/ClassPulse-Demo
+ls app.py requirements.txt
+python3 -m venv .venv
+source .venv/bin/activate
+python -m pip install -r requirements.txt
+python -m streamlit run app.py
+```
 
 ### Windows PowerShell
 
-    py -m venv .venv
-    .venv\Scripts\Activate.ps1
-    python -m pip install -r requirements.txt
-    python -m streamlit run app.py
+```powershell
+git clone https://github.com/joeuser-max/python-14-studybot.git
+cd python-14-studybot
+py -m venv .venv
+.venv\Scripts\Activate.ps1
+python -m pip install -r requirements.txt
+python -m streamlit run app.py
+```
 
-開啟 http://localhost:8501 即可進入網頁。尚無 LINE 或 OpenAI 憑證也可以使用一般控制台及模擬展示。
+### 常見錯誤
+
+| 錯誤訊息 | 原因與修復 |
+| --- | --- |
+| `No such file or directory: requirements.txt` | 沒有進入專案根目錄。先 `pwd`、`ls`，再 `cd ~/ClassPulse-Demo`。 |
+| `No module named streamlit` | 安裝先前失敗或用錯 Python 環境。執行 `source .venv/bin/activate`、`python -m pip install -r requirements.txt`。 |
+| `cd: no such file or directory: python-14-studybot` | 專案尚未 Clone，或已在專案內。用 `pwd` 確認後再 Clone。 |
+| 網址打不開 | 確認 Streamlit 的 Terminal 視窗仍在執行；`localhost` 只能在啟動網站的同一台電腦開啟。 |
+
+需要 **Python 3.11 以上**。如果下載後已有本機修改，先不要強制 `git pull` 或覆蓋檔案。
 
 ## 使用者流程
 
