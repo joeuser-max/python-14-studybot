@@ -112,3 +112,15 @@ def test_overlap_confirmation_is_dialog_in_actual_streamlit_page(monkeypatch, tm
     assert not app.exception, [str(e) for e in app.exception]
     confirm = next(b for b in app.button if b.label == "確認覆蓋並儲存")
     assert not confirm.disabled
+    confirm.click().run(timeout=30)
+    assert not app.exception, [str(e) for e in app.exception]
+    saved_plan = storage.load_json(tmp_path / "demo" / "plan.json")
+    assigned = next(row for row in saved_plan
+                    if row["task_id"] == "demo_task_electronics")
+    assert assigned["status"] == "scheduled"
+    assert assigned["class_override"] == "請假"
+    slots = storage.load_json(tmp_path / "demo" / "availability.json")
+    saved_slot = next(slot for slot in slots
+                      if slot["availability_id"] == assigned["availability_id"])
+    assert saved_slot["start_time"] == "09:15"
+    assert saved_slot["available_minutes"] == 45
