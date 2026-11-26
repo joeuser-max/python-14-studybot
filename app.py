@@ -579,7 +579,8 @@ def render_feedback() -> None:
                     st.caption(f"當次自評理解度：{note['progress']} / 5")
                 analysis = note.get("ai_analysis")
                 if isinstance(analysis, dict) and analysis.get("summary"):
-                    st.info("AI 整理：" + str(analysis["summary"]))
+                    label = "【預載展示／Mock】" if demo_mode else "AI 整理："
+                    st.info(label + str(analysis["summary"]))
                 if index < len(notes) - 1:
                     st.divider()
             st.caption("此項目為視覺彙整；原始 feedback_id 及筆記仍分別保存。")
