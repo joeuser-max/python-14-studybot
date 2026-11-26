@@ -14,6 +14,8 @@ jobs:
           python-version: '3.11'
       - name: Install dependencies
         run: python -m pip install -r requirements.txt
+      - name: 檢查 macOS 啟動器的 Shell 語法
+        run: bash -n start_mac.sh
       - name: Run offline tests
         run: python -m pytest -q
       - name: 檢查 Python 語法
