@@ -36,28 +36,33 @@ def push_line_message(user: dict, reminder: dict, text: str) -> bool:
     return True
 
 
-def _upsert_reminder(reminder: dict) -> dict:
+def _reserve_reminder(reminder: dict) -> dict:
+    """以檔案鎖保存重試金鑰；已存在的紀錄不可用新金鑰覆蓋。"""
     result: dict = {}
 
     def update(rows: list) -> list:
-        existing = next(
-            (row for row in rows if row.get("reminder_id") == reminder["reminder_id"]),
-            None,
-        )
+        existing = next((row for row in rows
+                         if row.get("reminder_id") == reminder["reminder_id"]), None)
         if existing:
-            if not reminder.get("retry_key"):
-                reminder["retry_key"] = existing.get("retry_key", "")
-            rows = [
-                {**row, **reminder} if row.get("reminder_id") == reminder["reminder_id"] else row
-                for row in rows
-            ]
-        else:
-            rows = rows + [reminder]
-        result.update(reminder)
-        return rows
+            key = existing.get("retry_key") or reminder.get("retry_key") or str(uuid.uuid4())
+            result.update({**existing, "retry_key": key})
+            return [{**row, "retry_key": key}
+                    if row.get("reminder_id") == reminder["reminder_id"] else row
+                    for row in rows]
+        new_row = {**reminder, "retry_key": reminder.get("retry_key") or str(uuid.uuid4())}
+        result.update(new_row)
+        return rows + [new_row]
 
     update_json(data_path("reminders"), update)
     return result
+
+
+def _mark_reminder(reminder_id: str, status: str, sent_at: str) -> None:
+    """只更新目標提醒的送出狀態，不覆寫其他 Worker 的資料。"""
+    def update(rows: list) -> list:
+        return [{**row, "status": status, "sent_at": sent_at}
+                if row.get("reminder_id") == reminder_id else row for row in rows]
+    update_json(data_path("reminders"), update)
 
 
 def _mark_unscheduled_alerted(alert_id: str) -> None:
@@ -132,7 +137,9 @@ def run_reminder_worker_once(now: datetime | None = None) -> list[dict]:
             )
         ):
             continue
-        saved = _upsert_reminder({**reminder, "status": "pending"})
+        saved = _reserve_reminder({**reminder, "status": "pending"})
+        if saved.get("status") == "sent":
+            continue
 
         if reminder["kind"] == "class_feedback":
             text = (
@@ -158,12 +165,10 @@ def run_reminder_worker_once(now: datetime | None = None) -> list[dict]:
             sent_at = ""
             print(f"LINE Push 失敗，將以相同 retry key 重試：{exc}")
 
-        saved["status"] = status
-        saved["sent_at"] = sent_at
-        _upsert_reminder(saved)
+        _mark_reminder(saved["reminder_id"], status, sent_at)
         if accepted and reminder["kind"] == "unscheduled_alert":
             _mark_unscheduled_alerted(reminder["reminder_id"])
-        attempted.append(saved)
+        attempted.append({**saved, "status": status, "sent_at": sent_at})
     return attempted
 
 
