@@ -37,6 +37,11 @@ def export_learning_markdown(records: dict, now: datetime | None = None,
         data[key] = [row for row in rows if isinstance(row, dict) and row.get("user_id") == user_id]
     events = {e["event_id"]: e for e in data["events"] if e.get("event_id")}
     tasks = {t["task_id"]: t for t in data["tasks"] if t.get("task_id")}
+    ai_tasks_by_feedback = {
+        task.get("source_feedback_id"): task
+        for task in data["tasks"]
+        if task.get("source") == "ai_confirmed" and task.get("source_feedback_id")
+    }
     slots = {a["availability_id"]: a for a in data["availability"] if a.get("availability_id")}
     notes = sorted(data["feedback"], key=lambda x: x.get("received_at", ""))
     response = calculate_response_rate(data["reminders"], notes, user_id)
@@ -78,6 +83,27 @@ def export_learning_markdown(records: dict, now: datetime | None = None,
         lines.append(f"- 課次：{field(f.get('class_date'))}｜{field(event.get('title') or f.get('event_id'))}"
                      f"｜回覆時間：{field(f.get('received_at'))}｜回饋來源：{field(f.get('source'))}")
         lines.append(f"  - 筆記：{field(f.get('content'))}")
+        if f.get("progress") is not None:
+            lines.append(f"  - 自評理解進度：{field(f.get('progress'))}/5")
+        analysis = f.get("ai_analysis", {})
+        if isinstance(analysis, dict):
+            if analysis.get("summary"):
+                lines.append(f"  - AI 整理摘要（供參考）：{field(analysis['summary'])}")
+            for point in analysis.get("key_points", []):
+                lines.append(f"  - AI 整理重點：{field(point)}")
+            for question in analysis.get("unresolved_questions", []):
+                lines.append(f"  - AI 待釐清問題：{field(question)}")
+            suggested_task = analysis.get("suggested_task")
+            if suggested_task:
+                status = (
+                    "已加入讀書任務"
+                    if f.get("feedback_id") in ai_tasks_by_feedback
+                    else "尚未加入讀書任務"
+                )
+                lines.append(
+                    f"  - AI 建議任務（{status}）：{field(suggested_task)}"
+                    f"｜預估 {field(analysis.get('estimated_minutes'))} 分鐘"
+                )
         lines.append(f"  - 來源筆記 ID：{field(f.get('feedback_id'))}")
     if not notes:
         lines.append("- 尚無資料")

@@ -6,8 +6,9 @@
 
 ```powershell
 python -m pip install -r requirements.txt
-Copy-Item .env.example .env
 ```
+
+程式不會自動載入 `.env`；要使用 LINE 請在啟動 Webhook／Worker 的 PowerShell 視窗設定環境變數，參考整合版 [README.md](README.md)。
 
 ## 執行
 
@@ -19,10 +20,12 @@ python -m flask --app line_bot:create_app run --host 0.0.0.0 --port 5000
 python reminder_worker.py
 ```
 
-可用 `LINE_CHANNEL_ACCESS_TOKEN` 與 `LINE_CHANNEL_SECRET` 測試真實 LINE；未設定 token 時 worker 使用模擬輸出，不會宣稱已實際送達。
+設定 `LINE_CHANNEL_ACCESS_TOKEN`、`LINE_CHANNEL_SECRET` 與 `LINE_BINDING_CODE` 後可測試真實 LINE。未設定 Token 時只輸出模擬訊息，提醒維持未成功狀態，不會宣稱已實際送達。詳見整合版 [README.md](README.md)。
 
 ## 主要 B 模組
 
 - `scheduler.py`：`make_plan`、任務狀態、課後／讀書提醒到期判斷
 - `reminder_worker.py`：常駐檢查、LINE Push、retry key 與送出狀態
 - `line_bot.py`：簽章驗證、Webhook 去重、課次定位與筆記保存
+
+Webhook 會將通過簽章驗證的綁定碼訊息對應到 A 端固定測試使用者 `demo_user_001`；Streamlit 可調整課後／讀書提醒開關。

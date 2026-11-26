@@ -2,27 +2,22 @@ import os
 import time
 import uuid
 from datetime import datetime
-from pathlib import Path
 from zoneinfo import ZoneInfo
 
 import requests
 
-from scheduler import (
-    get_due_events,
-    get_due_study_reminders,
-)
+from scheduler import get_due_events, get_due_study_reminders
 from storage import data_path, load_json, update_json
 
 
 TZ = ZoneInfo("Asia/Taipei")
-DATA_DIR = data_path("events").parent
 LINE_PUSH_URL = "https://api.line.me/v2/bot/message/push"
 
 
 def push_line_message(user: dict, reminder: dict, text: str) -> bool:
     token = os.getenv("LINE_CHANNEL_ACCESS_TOKEN", "")
     if not token:
-        print(f"[模擬，未送達 LINE] 推送給 {user.get('line_user_id', reminder['user_id'])}: {text}")
+        print(f"[模擬] 未設定 LINE Token，未實際推送：{text}")
         return False
 
     key = reminder.get("retry_key") or str(uuid.uuid4())
@@ -41,138 +36,144 @@ def push_line_message(user: dict, reminder: dict, text: str) -> bool:
     return True
 
 
+def _upsert_reminder(reminder: dict) -> dict:
+    result: dict = {}
 
-def _reserve_reminder(reminder: dict) -> dict:
-    """Persist the retry key BEFORE calling LINE; keep any existing entry on retries."""
-    result = {}
-    def change(items):
-        existing = next((row for row in items if row.get("reminder_id") == reminder["reminder_id"]), None)
+    def update(rows: list) -> list:
+        existing = next(
+            (row for row in rows if row.get("reminder_id") == reminder["reminder_id"]),
+            None,
+        )
         if existing:
-            if not existing.get("retry_key"):
-                existing["retry_key"] = reminder["retry_key"]
-            result.update(existing)
-            return items
-        row = dict(reminder)
-        result.update(row)
-        return items + [row]
-    update_json(data_path("reminders"), change)
+            if not reminder.get("retry_key"):
+                reminder["retry_key"] = existing.get("retry_key", "")
+            rows = [
+                {**row, **reminder} if row.get("reminder_id") == reminder["reminder_id"] else row
+                for row in rows
+            ]
+        else:
+            rows = rows + [reminder]
+        result.update(reminder)
+        return rows
+
+    update_json(data_path("reminders"), update)
     return result
 
 
-def _mark_reminder(reminder_id: str, status: str, sent_at: str) -> None:
-    """Merge status into the CURRENT data rather than overwriting stale snapshots."""
-    def change(items):
-        return [{**row, "status": status, "sent_at": sent_at}
-                if row.get("reminder_id") == reminder_id else row for row in items]
-    update_json(data_path("reminders"), change)
+def _mark_unscheduled_alerted(alert_id: str) -> None:
+    def update(rows: list) -> list:
+        for row in rows:
+            if row.get("unscheduled_alert_id") == alert_id:
+                row["unscheduled_alerted"] = True
+        return rows
+    update_json(data_path("plan"), update)
+
+
+def run_reminder_worker_once(now: datetime | None = None) -> list[dict]:
+    now = now or datetime.now(TZ)
+    now = now.astimezone(TZ) if now.tzinfo else now.replace(tzinfo=TZ)
+    events = load_json(data_path("events"))
+    tasks = load_json(data_path("tasks"))
+    plan = load_json(data_path("plan"))
+    availability = load_json(data_path("availability"))
+    users = load_json(data_path("users"))
+    reminders = load_json(data_path("reminders"))
+
+    due = get_due_events(events, now, reminders)
+    due.extend(get_due_study_reminders(tasks, plan, availability, users, now, reminders))
+    task_map = {task["task_id"]: task for task in tasks}
+    user_map = {user["user_id"]: user for user in users}
+    existing_ids = {row.get("reminder_id") for row in reminders}
+
+    for row in plan:
+        if row.get("status") != "unscheduled" or row.get("unscheduled_alerted"):
+            continue
+        task = task_map.get(row.get("task_id"))
+        user = user_map.get(task.get("user_id")) if task else None
+        if (
+            not task
+            or not user
+            or not user.get("line_user_id")
+            or not user.get("reminders_enabled", False)
+        ):
+            continue
+        alert_id = row.get("unscheduled_alert_id") or f"unscheduled_{row['task_id']}"
+        if alert_id in existing_ids:
+            existing = next(item for item in reminders if item.get("reminder_id") == alert_id)
+            if existing.get("status") == "sent":
+                _mark_unscheduled_alerted(alert_id)
+                continue
+            due.append(dict(existing))
+        else:
+            due.append({
+                "reminder_id": alert_id,
+                "user_id": task["user_id"],
+                "event_id": "",
+                "task_id": task["task_id"],
+                "availability_id": "",
+                "class_date": "",
+                "kind": "unscheduled_alert",
+                "scheduled_at": now.isoformat(timespec="seconds"),
+                "sent_at": "",
+                "status": "pending",
+                "retry_key": "",
+            })
+
+    attempted: list[dict] = []
+    for reminder in due:
+        reminder["retry_key"] = reminder.get("retry_key") or str(uuid.uuid4())
+        user = user_map.get(reminder["user_id"])
+        if (
+            not user
+            or not user.get("line_user_id")
+            or (
+                reminder["kind"] in {"class_feedback", "unscheduled_alert"}
+                and not user.get("reminders_enabled", False)
+            )
+        ):
+            continue
+        saved = _upsert_reminder({**reminder, "status": "pending"})
+
+        if reminder["kind"] == "class_feedback":
+            text = (
+                "課後回饋時間到囉！請在 LINE 輸入「補筆記」，"
+                "回報本堂理解進度並記錄學習重點與疑問。"
+            )
+        elif reminder["kind"] == "study_session":
+            task = task_map.get(reminder["task_id"], {})
+            text = f"讀書時段開始囉！任務：{task.get('title', reminder['task_id'])}，請開始完成。"
+        else:
+            task = task_map.get(reminder["task_id"], {})
+            text = f"提醒：任務「{task.get('title', reminder['task_id'])}」尚未排入。原因："
+            plan_row = next((p for p in plan if p.get("task_id") == reminder["task_id"]), {})
+            text += plan_row.get("reason", "請在 ClassPulse 調整時段或期限。")
+
+        accepted = False
+        try:
+            accepted = push_line_message(user, saved, text)
+            status = "sent" if accepted else "failed"
+            sent_at = now.isoformat(timespec="seconds") if accepted else ""
+        except requests.RequestException as exc:
+            status = "failed"
+            sent_at = ""
+            print(f"LINE Push 失敗，將以相同 retry key 重試：{exc}")
+
+        saved["status"] = status
+        saved["sent_at"] = sent_at
+        _upsert_reminder(saved)
+        if accepted and reminder["kind"] == "unscheduled_alert":
+            _mark_unscheduled_alerted(reminder["reminder_id"])
+        attempted.append(saved)
+    return attempted
 
 
 def run_reminder_worker(interval_seconds: int = 60) -> None:
     while True:
         try:
-            now = datetime.now(TZ)
-            events = load_json(DATA_DIR / "events.json")
-            tasks = load_json(DATA_DIR / "tasks.json")
-            plan = load_json(DATA_DIR / "plan.json")
-            availability = load_json(DATA_DIR / "availability.json")
-            users = load_json(DATA_DIR / "users.json")
-            reminders = load_json(DATA_DIR / "reminders.json")
-
-            user_by_id = {row["user_id"]: row for row in users}
-            due = [row for row in get_due_events(events, now, reminders)
-                   if user_by_id.get(row["user_id"], {}).get("reminders_enabled", False)
-                   and user_by_id[row["user_id"]].get("line_user_id")]
-            due.extend(get_due_study_reminders(tasks, plan, availability, users, now, reminders))
-
-            existing_unscheduled = {
-                (item.get("user_id"), item.get("task_id"))
-                for item in reminders
-                if item.get("kind") == "unscheduled_alert"
-                and item.get("status") in {"pending", "sent", "failed"}
-            }
-            if plan:
-                for row in plan:
-                    if row.get("status") != "unscheduled" or not row.get("unscheduled_alerted"):
-                        continue
-                    task = next((item for item in tasks if item["task_id"] == row["task_id"]), None)
-                    if not task:
-                        continue
-                    key = (task["user_id"], task["task_id"])
-                    if key in existing_unscheduled:
-                        continue
-                    user = next((item for item in users if item["user_id"] == task["user_id"]), None)
-                    if not user or not user.get("line_user_id") or not user.get("reminders_enabled", False):
-                        continue
-                    due.append({
-                        "reminder_id": f"unscheduled_{task['task_id']}",
-                        "user_id": task["user_id"],
-                        "event_id": "",
-                        "task_id": task["task_id"],
-                        "availability_id": "",
-                        "class_date": "",
-                        "kind": "unscheduled_alert",
-                        "scheduled_at": now.isoformat(timespec="seconds"),
-                        "sent_at": "",
-                        "status": "pending",
-                        "retry_key": str(uuid.uuid4()),
-                    })
-
-            for reminder in due:
-                reminder["retry_key"] = reminder.get("retry_key") or str(uuid.uuid4())
-                reserved = _reserve_reminder(reminder)
-                if reserved.get("status") == "sent":
-                    continue
-                reminder = reserved
-                user = user_by_id.get(reminder["user_id"])
-                if not user or not user.get("line_user_id"):
-                    continue
-                if reminder["kind"] == "class_feedback":
-                    text = "課後回饋時間到囉！請點選「補筆記」記錄今天的學習重點與疑問。"
-                elif reminder["kind"] == "study_session":
-                    text = f"讀書時段開始囉！任務：{reminder['task_id']}，請開始完成。"
-                else:
-                    text = "提醒：有讀書任務尚未排入，請在 Streamlit 調整時段或期限。"
-
-                try:
-                    accepted = push_line_message(user, reminder, text)
-                    status = "sent" if accepted else "failed"
-                except Exception as exc:
-                    status = "failed"
-                    print(f"LINE Push 失敗（保留 retry key）：{exc}")
-                _mark_reminder(reminder["reminder_id"], status,
-                               now.isoformat(timespec="seconds") if status == "sent" else "")
+            run_reminder_worker_once()
         except Exception as exc:
             print(f"worker 檢查失敗：{exc}")
         time.sleep(interval_seconds)
-
-
-def send_unscheduled_alerts(tasks: list[dict], plan: list[dict], users: list[dict]) -> list[dict]:
-    by_task = {task["task_id"]: task for task in tasks}
-    due = []
-    for row in plan:
-        if row.get("status") != "unscheduled":
-            continue
-        task = by_task.get(row["task_id"])
-        if not task:
-            continue
-        user = next((item for item in users if item["user_id"] == task["user_id"]), None)
-        if not user or not user.get("line_user_id") or not user.get("reminders_enabled", False):
-            continue
-        if row.get("unscheduled_alerted"):
-            due.append({
-                "reminder_id": f"unscheduled_{row['task_id']}",
-                "user_id": task["user_id"],
-                "event_id": "",
-                "task_id": row["task_id"],
-                "availability_id": "",
-                "class_date": "",
-                "kind": "unscheduled_alert",
-                "scheduled_at": datetime.now(TZ).isoformat(timespec="seconds"),
-                "sent_at": "",
-                "status": "pending",
-                "retry_key": str(uuid.uuid4()),
-            })
-    return due
 
 
 if __name__ == "__main__":
