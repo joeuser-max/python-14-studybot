@@ -16,3 +16,18 @@ jobs:
         run: python -m pip install -r requirements.txt
       - name: Run offline tests
         run: python -m pytest -q
+      - name: 檢查 Python 語法
+        run: python -m compileall -q app.py ai_assistant.py line_bot.py reminder_worker.py calendar_events.py
+      - name: 驗證 Streamlit 網頁 HTTP 服務可啟動
+        run: |
+          python -m streamlit run app.py --server.headless true --server.port 8501 > /tmp/classpulse-streamlit.log 2>&1 &
+          streamlit_pid=$!
+          trap 'kill "$streamlit_pid" 2>/dev/null || true' EXIT
+          for i in $(seq 1 20); do
+            if curl --fail --silent http://localhost:8501/_stcore/health > /dev/null; then
+              exit 0
+            fi
+            sleep 1
+          done
+          cat /tmp/classpulse-streamlit.log
+          exit 1

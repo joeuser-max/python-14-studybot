@@ -1,12 +1,8 @@
 from datetime import datetime, timedelta
-from pathlib import Path
 from zoneinfo import ZoneInfo
-
-from storage import load_json, save_json
 
 
 TZ = ZoneInfo("Asia/Taipei")
-DATA_DIR = Path(__file__).resolve().parent / "data"
 
 
 def _iso(value: datetime) -> str:
@@ -64,7 +60,7 @@ def make_plan(
 
     fixed_by_task: set[str] = set()
     manual_conflict_ids: set[str] = set()
-    for index, (task, slot) in enumerate(manual_entries):
+    for task, slot in manual_entries:
         task_id = task["task_id"]
         reason = None
         if not slot:
@@ -83,7 +79,7 @@ def make_plan(
                     reason = "指定時段已在過去或正在進行"
                 elif estimate > minutes:
                     reason = "指定時段不足以容納任務時長"
-                elif end.time() and end > deadline:
+                elif end > deadline:
                     reason = "指定時段結束時間晚於 Deadline"
                 elif slot["availability_id"] in used_slots:
                     reason = "指定時段與另一固定任務衝突"
@@ -102,7 +98,7 @@ def make_plan(
 
         if reason:
             manual_conflict_ids.add(task_id)
-            plan.append(_unscheduled(task, reason, previous))
+            plan.append(_unscheduled(task, reason, previous, now))
         else:
             fixed_by_task.add(task_id)
             used_slots.add(slot["availability_id"])
@@ -157,7 +153,7 @@ def make_plan(
                 candidates.append((remaining, start, slot_id, slot))
 
         if not candidates:
-            plan.append(_unscheduled(task, "找不到足夠且不衷突的可用時段", previous))
+            plan.append(_unscheduled(task, "找不到足夠且不衝突的可用時段", previous, now))
             continue
 
         _, _, slot_id, slot = min(candidates, key=lambda item: (item[0], item[1], item[2]))
@@ -194,13 +190,12 @@ def make_plan(
         if row["status"] == "unscheduled" and not row["unscheduled_alerted"]:
             old = previous.get(row["task_id"])
             if not old or old.get("status") == "scheduled":
-                row["unscheduled_alerted"] = True
                 new_alerts.append(row["task_id"])
 
     return {"plan": plan, "new_alerts": new_alerts}
 
 
-def _unscheduled(task: dict, reason: str, previous: dict) -> dict:
+def _unscheduled(task: dict, reason: str, previous: dict, now: datetime) -> dict:
     old = previous.get(task["task_id"])
     previously_unscheduled = bool(old and old.get("status") == "unscheduled")
     return {
@@ -209,7 +204,12 @@ def _unscheduled(task: dict, reason: str, previous: dict) -> dict:
         "status": "unscheduled",
         "source": "manual" if task.get("preferred_availability_id") else "auto",
         "reason": reason,
-        "unscheduled_alerted": previously_unscheduled,
+        "unscheduled_alerted": bool(old and old.get("unscheduled_alerted")),
+        "unscheduled_alert_id": (
+            old.get("unscheduled_alert_id")
+            if previously_unscheduled
+            else f"unscheduled_{task['task_id']}_{now.strftime('%Y%m%d%H%M%S%f')}"
+        ),
     }
 
 
@@ -239,15 +239,14 @@ def get_due_events(
             if date.isoweekday() != weekday:
                 continue
             end_dt = datetime.combine(date, end, tzinfo=TZ) + timedelta(minutes=offset)
-            if timedelta(0) <= now - end_dt <= timedelta(minutes=5):
-                class_date = date.isoformat()
-                key = (event["user_id"], event["event_id"], class_date)
-                old = existing.get(key)
-                if old:
-                    if old.get("status") != "sent":
-                        due.append(dict(old))
-                else:
-                    due.append({
+            class_date = date.isoformat()
+            key = (event["user_id"], event["event_id"], class_date)
+            old = existing.get(key)
+            if old:
+                if old.get("status") != "sent" and end_dt <= now:
+                    due.append(dict(old))
+            elif timedelta(0) <= now - end_dt <= timedelta(minutes=5):
+                due.append({
                         "reminder_id": f"class_{event['event_id']}_{class_date}",
                         "user_id": event["user_id"],
                         "event_id": event["event_id"],
@@ -260,6 +259,7 @@ def get_due_events(
                         "status": "pending",
                         "retry_key": "",
                     })
+            if end_dt <= now:
                 break
     return due
 
@@ -299,12 +299,12 @@ def get_due_study_reminders(
         if user_id not in enabled_users:
             continue
         key = (user_id, task["task_id"], slot["availability_id"])
-        start = _date_and_time(slot["date"], slot["start_time"])
         old = existing.get(key)
         if old and old.get("status") == "sent":
             continue
+        start = _date_and_time(slot["date"], slot["start_time"])
         if old:
-            if start <= now and start >= now - timedelta(minutes=5):
+            if old.get("status") != "sent" and start <= now:
                 due.append(dict(old))
             continue
         if start <= now and start >= now - timedelta(minutes=5):

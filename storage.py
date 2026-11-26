@@ -5,6 +5,7 @@
 """
 from __future__ import annotations
 
+from contextvars import ContextVar
 import json
 import os
 import tempfile
@@ -14,10 +15,14 @@ from typing import Callable
 from uuid import uuid4
 from zoneinfo import ZoneInfo
 
+from dotenv import load_dotenv
 from filelock import FileLock, Timeout
 
 ROOT = Path(__file__).resolve().parent
+load_dotenv(ROOT / ".env")
 DATA_DIR = Path(os.environ.get("CLASSPULSE_DATA_DIR", str(ROOT / "data"))).resolve()
+DEMO_DATA_DIR = ROOT / ".classpulse-demo-data"
+_ACTIVE_DATA_DIR: ContextVar[Path | None] = ContextVar("classpulse_active_data_dir", default=None)
 FILES = {
     "events": "events.json", "tasks": "tasks.json", "availability": "availability.json",
     "plan": "plan.json", "users": "users.json", "reminders": "reminders.json",
@@ -31,10 +36,20 @@ class DataError(ValueError):
     """資料錯誤，應在 Streamlit 顯示給使用者。"""
 
 
+def select_demo_storage(enabled: bool) -> None:
+    """只為目前的執行 context 切換展示資料，不更動 LINE Worker 的正式資料路徑。"""
+    _ACTIVE_DATA_DIR.set(DEMO_DATA_DIR if enabled else None)
+
+
+def is_demo_storage() -> bool:
+    return _ACTIVE_DATA_DIR.get() is not None
+
+
 def data_path(name: str) -> Path:
     if name not in FILES:
         raise DataError(f"未知的資料類型：{name}")
-    return DATA_DIR / FILES[name]
+    directory = _ACTIVE_DATA_DIR.get()
+    return (directory if directory is not None else DATA_DIR) / FILES[name]
 
 
 def _read_unlocked(path: Path) -> list:
@@ -172,7 +187,10 @@ def validate_availability(slot: dict, existing: list | None = None) -> dict:
         raise DataError("可用時段長度須為正整數（最多 1440 分鐘）")
     beginning = datetime.combine(selected_date, start)
     ending = beginning + timedelta(minutes=minutes)
-    if ending.date() != selected_date:
+    if (
+        ending.date() != selected_date
+        and ending != datetime.combine(selected_date + timedelta(days=1), time.min)
+    ):
         raise DataError("MVP 不支援跨午夜時段")
     for old in existing or []:
         if old.get("user_id") != slot["user_id"] or old.get("date") != slot["date"]:
@@ -195,6 +213,19 @@ def add_event(event: dict) -> list:
     return update_json(data_path("events"), change)
 
 
+def update_event(event: dict) -> list:
+    validate_event(event)
+
+    def change(items: list) -> list:
+        if not any(row.get("event_id") == event["event_id"] for row in items):
+            raise DataError("找不到要修改的課程，請重新整理後再試")
+        return [
+            event if row.get("event_id") == event["event_id"] else row
+            for row in items
+        ]
+    return update_json(data_path("events"), change)
+
+
 def add_task(data: list, task: dict) -> list:
     validate_task(task)
     if any(item.get("task_id") == task["task_id"] for item in data):
@@ -206,10 +237,102 @@ def add_task_to_storage(task: dict) -> list:
     return update_json(data_path("tasks"), lambda items: add_task(items, task))
 
 
+def update_task(task: dict) -> list:
+    validate_task(task)
+
+    def change(items: list) -> list:
+        existing = next(
+            (
+                row for row in items
+                if row.get("task_id") == task["task_id"]
+                and row.get("user_id") == task["user_id"]
+            ),
+            None,
+        )
+        if existing is None:
+            raise DataError("找不到要修改的任務，請重新整理後再試")
+        return [
+            task if row is existing else row
+            for row in items
+        ]
+    return update_json(data_path("tasks"), change)
+
+
 def add_availability(slot: dict) -> list:
     def change(items: list) -> list:
         validate_availability(slot, items)
         return items + [slot]
+    return update_json(data_path("availability"), change)
+
+
+def add_availabilities(slots: list[dict]) -> list:
+    if not slots:
+        raise DataError("請至少勾選一個開始時間")
+
+    def change(items: list) -> list:
+        updated_items = list(items)
+        for slot in slots:
+            validate_availability(slot, updated_items)
+            updated_items.append(slot)
+        return updated_items
+
+    return update_json(data_path("availability"), change)
+
+
+def update_availability(slot: dict) -> list:
+    def change(items: list) -> list:
+        existing = next(
+            (
+                row for row in items
+                if row.get("availability_id") == slot.get("availability_id")
+                and row.get("user_id") == slot.get("user_id")
+            ),
+            None,
+        )
+        if existing is None:
+            raise DataError("找不到要修改的讀書時段，請重新整理後再試")
+        others = [row for row in items if row is not existing]
+        validate_availability(slot, others)
+        return [
+            slot if row is existing else row
+            for row in items
+        ]
+    return update_json(data_path("availability"), change)
+
+
+def clear_task_availability_preference(availability_id: str, user_id: str) -> list:
+    def change(items: list) -> list:
+        return [
+            {
+                **task,
+                "preferred_availability_id": "",
+            }
+            if task.get("user_id") == user_id
+            and task.get("preferred_availability_id") == availability_id
+            else task
+            for task in items
+        ]
+
+    return update_json(data_path("tasks"), change)
+
+
+def delete_availability(availability_id: str, user_id: str) -> list:
+    def change(items: list) -> list:
+        if not any(
+            row.get("availability_id") == availability_id
+            and row.get("user_id") == user_id
+            for row in items
+        ):
+            raise DataError("找不到要刪除的讀書時段，請重新整理後再試")
+        return [
+            row
+            for row in items
+            if not (
+                row.get("availability_id") == availability_id
+                and row.get("user_id") == user_id
+            )
+        ]
+
     return update_json(data_path("availability"), change)
 
 
@@ -238,6 +361,9 @@ def validate_feedback(feedback: dict) -> dict:
     content = feedback.get("content", "")
     if not isinstance(content, str) or len(content.strip()) < 2 or content.strip() in {"補筆記", "取消", "查看筆記"}:
         raise DataError("有效筆記至少兩個字，且不能是 LINE 選單指令")
+    progress = feedback.get("progress")
+    if progress is not None and (type(progress) is not int or not 1 <= progress <= 5):
+        raise DataError("自評進度必須是 1 到 5 的整數")
     if feedback["source"] not in ("selected", "push", "demo"):
         raise DataError("不支援的筆記來源")
     if not isinstance(feedback.get("reminder_id", ""), str):
@@ -256,6 +382,32 @@ def save_feedback(feedback: dict, path: str | Path | None = None) -> bool:
         return items + [feedback]
     update_json(path or data_path("feedback"), change)
     return result["saved"]
+
+
+def update_feedback_analysis(
+    feedback_id: str,
+    user_id: str,
+    analysis: dict,
+) -> list:
+    if not isinstance(analysis, dict):
+        raise DataError("AI 整理結果格式錯誤")
+
+    def change(items: list) -> list:
+        if not any(
+            row.get("feedback_id") == feedback_id
+            and row.get("user_id") == user_id
+            for row in items
+        ):
+            raise DataError("找不到要更新的課後回饋")
+        return [
+            {**row, "ai_analysis": analysis}
+            if row.get("feedback_id") == feedback_id
+            and row.get("user_id") == user_id
+            else row
+            for row in items
+        ]
+
+    return update_json(data_path("feedback"), change)
 
 
 def create_id(prefix: str) -> str:
