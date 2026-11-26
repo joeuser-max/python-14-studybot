@@ -13,6 +13,12 @@ if ! command -v python3 >/dev/null 2>&1; then
   exit 1
 fi
 
+if ! python3 -c 'import sys; sys.exit(sys.version_info < (3, 11))' >/dev/null 2>&1; then
+  echo "錯誤：ClassPulse 需要 Python 3.11 以上版本。"
+  python3 --version
+  exit 1
+fi
+
 if [[ ! -x .venv/bin/python ]]; then
   echo "首次啟動：建立專案專用的 .venv..."
   python3 -m venv .venv
