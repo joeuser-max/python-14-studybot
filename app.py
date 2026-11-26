@@ -383,6 +383,7 @@ def course_card(course: dict) -> None:
 
 def generate_schedule() -> None:
     rebuild_plan(USER_ID, today)
+    refresh_timesheet()
 
 
 def go_to(target: str) -> None:
@@ -410,6 +411,12 @@ def render_progress_insights(prefix: str = "overview") -> None:
         st.info("這個期間尚無完成紀錄。將任務標記為完成後，數據才會累積。")
     if demo_mode:
         st.caption("目前為展示資料；正式模式僅計算真實的進度修改紀錄。")
+
+
+def refresh_timesheet() -> None:
+    """重新建立前端日曆，確保取消拖曳與儲存後不留下虛假的視覺狀態。"""
+    st.session_state["cp_timesheet_epoch"] = st.session_state.get("cp_timesheet_epoch", 0) + 1
+    st.session_state.pop("cp_last_timesheet_change", None)
 
 
 def render_timesheet() -> None:
@@ -444,7 +451,7 @@ def render_timesheet() -> None:
     """
     try:
         response = editable_calendar(events=events, options=options, custom_css=css,
-                                     key=f"cp_timesheet_calendar_{week_date.isoformat()}")
+                                     key=f"cp_timesheet_calendar_{week_date.isoformat()}_v{st.session_state.get('cp_timesheet_epoch', 0)}")
     except Exception as exc:
         st.error(f"互動日曆無法載入：{exc}")
         response = None
@@ -493,7 +500,7 @@ def render_timesheet() -> None:
                                       key="cp_timesheet_manual_start")
                 original_minutes = int(lookup[task_id]["estimated_minutes"])
                 minutes = st.number_input("時長（分鐘）", 15, 600,
-                                          max(15, min(600, original_minutes)),
+                                          min(600, max(15, ((original_minutes + 14) // 15) * 15)),
                                           step=15, key="cp_timesheet_manual_duration")
                 if st.form_submit_button("預覽安排"):
                     beginning = datetime.combine(day, clock, TZ)
@@ -522,9 +529,11 @@ def render_timesheet() -> None:
             def do_unassign():
                 unassign_task(USER_ID, task["task_id"], today)
                 st.session_state.pop("cp_pending_timesheet", None)
+                refresh_timesheet()
             saved(do_unassign, "已移回待排")
         if b.button("取消", key="cp_unassign_no"):
             st.session_state.pop("cp_pending_timesheet", None)
+            refresh_timesheet()
             st.rerun()
         return
     try:
@@ -536,6 +545,7 @@ def render_timesheet() -> None:
         st.error(f"不能儲存這個時段：{exc}")
         if st.button("取消此次移動", key="cp_bad_drop"):
             st.session_state.pop("cp_pending_timesheet", None)
+            refresh_timesheet()
             st.rerun()
         return
     st.write(f"**{task['title']}**：{proposal['start']:%Y-%m-%d %H:%M} — "
@@ -555,9 +565,11 @@ def render_timesheet() -> None:
             place_task(USER_ID, task["task_id"], proposal["start"],
                        proposal["end"], override, today)
             st.session_state.pop("cp_pending_timesheet", None)
+            refresh_timesheet()
         saved(commit_placement, "任務時段已保存，排程已重新計算")
     if b.button("取消變更", key="cp_placement_cancel"):
         st.session_state.pop("cp_pending_timesheet", None)
+        refresh_timesheet()
         st.rerun()
 
 
