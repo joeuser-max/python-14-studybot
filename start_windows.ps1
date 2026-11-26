@@ -53,19 +53,23 @@ try {
 
     Write-Host "[4/4] 檢查專用 Port $Port..."
     $socket = New-Object System.Net.Sockets.TcpClient
+    $occupied = $false
     try {
         try {
             $socket.Connect("127.0.0.1", $Port)
+            $occupied = $socket.Connected
         }
-        catch [System.Net.Sockets.SocketException] {
-            # Connection refused: the port is available.
-        }
-        if ($socket.Connected) {
-            throw "Port $Port 已有網站在運作。請先在先前啟動的 PowerShell 按 Ctrl+C。"
+        catch {
+            # PowerShell can wrap a SocketException in MethodInvocationException.
+            # Connection refused means this local port is available.
+            $occupied = $false
         }
     }
     finally {
         $socket.Dispose()
+    }
+    if ($occupied) {
+        throw "Port $Port 已有網站在運作。請先在先前啟動的 PowerShell 按 Ctrl+C。"
     }
 
     Write-Host ""
