@@ -3,12 +3,17 @@ from __future__ import annotations
 
 from collections import defaultdict
 from datetime import date, datetime, time, timedelta
+import json
 
 import streamlit as st
+from streamlit_calendar import calendar as editable_calendar
 
 from ai_assistant import AIError, ai_is_configured, analyze_learning_records
 from calendar_export import export_calendar_ics, google_calendar_url, task_calendar_event
 from day_demo import SCENES, advance, new_day_state, respond, visible_messages
+from progress_insights import history_series
+from visual_planner import (board_events, calendar_change_candidate, place_task,
+                            propose_placement, unassign_task, resume_auto, rebuild_plan)
 from demo_data import mock_learning_suggestions, seed_demo_data
 from task_actions import save_task_changes, delete_task_and_plan
 from exporter import export_learning_markdown
@@ -66,7 +71,7 @@ if demo_mode:
 def read_all() -> dict[str, list]:
     return {name: load_json(data_path(name)) for name in
             ("events", "tasks", "availability", "plan",
-             "reminders", "feedback", "users")}
+             "reminders", "feedback", "users", "progress_events")}
 
 
 def own(items: list) -> list:
@@ -149,6 +154,10 @@ with st.sidebar:
     if not onboarding_done and st.button("跳過初次設定", use_container_width=True):
         saved(lambda: persist_user({"onboarding_complete": True}), "已進入控制台")
     st.caption("LINE 一日展示皆為可重播的情境，不連接真實 LINE。")
+    with st.expander("校園資源", expanded=False):
+        st.link_button("中央大學 K 書空間預約", "https://mwa.lib.ncu.edu.tw/pwaspace/", use_container_width=True)
+        st.link_button("中央大學 ee-class", "https://ncueeclass.ncu.edu.tw", use_container_width=True)
+        st.caption("資料與公告以學校官方網站為準。")
     with st.expander("Donate", expanded=False):
         st.caption("支持 ClassPulse · 資訊展示，非金流服務")
         st.write("**銀行代碼：822**")
@@ -210,7 +219,7 @@ def add_task_form(prefix: str) -> None:
                     "subject": subject.strip(), "title": title.strip(),
                     "deadline": deadline.isoformat(), "estimated_minutes": int(minutes),
                     "status": "pending", "progress_percent": 0,
-                    "preferred_availability_id": ""}
+                    "preferred_availability_id": "", "source": "manual_user"}
             saved(lambda: add_task_to_storage(item), "任務已建立")
 
 
@@ -340,7 +349,8 @@ def task_card(task: dict) -> None:
     with st.container(border=True):
         left, right = st.columns([5, 1], vertical_alignment="center")
         with left:
-            if st.button(f"{task['title']}  ·  {task['subject']}",
+            ai_label = "  ·  ✦ AI 建議" if task.get("source") == "ai_confirmed" else ""
+            if st.button(f"{task['title']}  ·  {task['subject']}{ai_label}",
                          key=f"cp_task_{task['task_id']}",
                          use_container_width=True):
                 task_dialog(task)
@@ -373,18 +383,195 @@ def course_card(course: dict) -> None:
 
 
 def generate_schedule() -> None:
-    from scheduler import make_plan
-    result = make_plan(own(data["tasks"]), own(data["availability"]),
-                       own(data["plan"]), today)
-    normalized = normalize_plan_result(result, USER_ID)
-    update_json(data_path("plan"),
-                lambda rows: merge_user_plan(rows, USER_ID, normalized))
+    rebuild_plan(USER_ID, today)
+    refresh_timesheet()
 
 
 def go_to(target: str) -> None:
     # st.radio 已初始化後不能直接寫入其同名 key；下次 rerun 前先排隊。
     st.session_state["cp_next_nav"] = target
     st.rerun()
+
+
+def render_progress_insights(prefix: str = "overview") -> None:
+    """只統計實際完成的任務，圖表不將預估時間誤當作實際讀書時間。"""
+    st.subheader("學習成果")
+    st.caption("完成後才計入；分鐘數是任務的「預估時間」，不是實際測得的 K 書時間。")
+    period = st.radio("統計區間", ["1D", "1W", "1M"], index=1,
+                      horizontal=True, key=f"cp_stats_period_{prefix}")
+    summary = history_series(own(data["progress_events"]), own(data["tasks"]),
+                             USER_ID, period, today)
+    c1, c2, c3 = st.columns(3)
+    c1.metric("完成任務", summary["completed"])
+    c2.metric("完成任務預估時間", f"{summary['planned_minutes']} 分鐘")
+    c3.metric("有完成紀錄的日數", summary["active_days"])
+    if summary["completed"]:
+        st.area_chart(summary["rows"], x="date", y="cumulative",
+                      height=230, use_container_width=True)
+    else:
+        st.info("這個期間尚無完成紀錄。將任務標記為完成後，數據才會累積。")
+    if demo_mode:
+        st.caption("目前為展示資料；正式模式僅計算真實的進度修改紀錄。")
+
+
+def refresh_timesheet() -> None:
+    """重新建立前端日曆，確保取消拖曳與儲存後不留下虛假的視覺狀態。"""
+    st.session_state["cp_timesheet_epoch"] = st.session_state.get("cp_timesheet_epoch", 0) + 1
+    st.session_state.pop("cp_last_timesheet_change", None)
+
+
+def render_timesheet() -> None:
+    """拖曳與拉長的視覺排程：時間座標須由後端檢核並確認才真正儲存。"""
+    st.subheader("拖曳式時間表")
+    st.caption("「全天」列的待排任務可以拖進下方週／日時間格。"
+               "拖動方塊上下邊緣可調整時長（15 分鐘）；"
+               "紅色是課程、淺綠是可用時間、藍色是手動任務、紫色 ✦ 是 AI 建議。")
+    week_date = st.date_input("規劃日期", today.date(), key="cp_timesheet_focus")
+    events = board_events(own(data["events"]), own(data["availability"]),
+                          own(data["tasks"]), own(data["plan"]), week_date, today)
+    options = {
+        "initialDate": week_date.isoformat(), "initialView": "timeGridWeek",
+        "editable": True, "selectable": True, "eventOverlap": True,
+        "eventResizableFromStart": True, "slotDuration": "00:15:00",
+        "snapDuration": "00:15:00", "defaultTimedEventDuration": "00:45:00",
+        "allDaySlot": True, "dayMaxEvents": False, "height": 650,
+        "nowIndicator": True, "timeZone": "Asia/Taipei",
+        "slotMinTime": "07:00:00", "slotMaxTime": "24:00:00",
+        "headerToolbar": {"left": "today prev,next", "center": "title",
+                          "right": "timeGridDay,timeGridWeek,dayGridMonth"},
+        "buttonText": {"today": "今天", "week": "週", "day": "日", "month": "月"},
+        "firstDay": 1, "locale": "zh-tw",
+    }
+    css = """
+    .fc{font-family:-apple-system,BlinkMacSystemFont,'Noto Sans TC',sans-serif}
+    .fc .fc-toolbar-title{font-size:1.13rem;font-weight:700}
+    .fc .fc-event{border-radius:7px;padding:2px 5px;cursor:grab}
+    .fc .fc-timegrid-now-indicator-line{border-color:#F59E0B}
+    .fc .fc-day-today{background:rgba(70,114,190,.04)!important}
+    .fc .fc-timegrid-all-day{background:rgba(117,128,145,.06)}
+    """
+    try:
+        response = editable_calendar(events=events, options=options, custom_css=css,
+                                     key=f"cp_timesheet_calendar_{week_date.isoformat()}_v{st.session_state.get('cp_timesheet_epoch', 0)}")
+    except Exception as exc:
+        st.error(f"互動日曆無法載入：{exc}")
+        response = None
+    candidate = calendar_change_candidate(response, own(data["tasks"]))
+    if candidate:
+        signature = json.dumps(response.get("eventChange", {}), sort_keys=True, ensure_ascii=False)
+        if signature != st.session_state.get("cp_last_timesheet_change"):
+            st.session_state["cp_last_timesheet_change"] = signature
+            st.session_state["cp_pending_timesheet"] = candidate
+
+    with st.expander("待排任務盒", expanded=True):
+        scheduled_ids = {p["task_id"] for p in own(data["plan"])
+                         if p.get("status") == "scheduled"}
+        waiting = [t for t in own(data["tasks"])
+                   if t.get("status") == "pending" and t["task_id"] not in scheduled_ids]
+        if not waiting:
+            st.caption("目前沒有待排任務。請新增任務後再拖入時間格。")
+        for task in waiting:
+            a, b = st.columns([4, 1], vertical_alignment="center")
+            icon = "✦ AI 建議" if task.get("source") == "ai_confirmed" else "手動建立"
+            a.write(f"**{task['title']}** · {icon} · {task['estimated_minutes']} 分鐘")
+            if task.get("planning_hold"):
+                if b.button("恢復自動排程", key=f"cp_resume_{task['task_id']}"):
+                    saved(lambda tid=task["task_id"]: resume_auto(USER_ID, tid, today),
+                          "已恢復自動安排")
+            else:
+                if b.button("指定時間", key=f"cp_pick_{task['task_id']}"):
+                    st.session_state["cp_timesheet_pick_task"] = task["task_id"]
+                    st.rerun()
+
+    with st.expander("觸控／手機備用：指定時間與長度",
+                     expanded=bool(st.session_state.get("cp_timesheet_pick_task"))):
+        available_tasks = [t for t in own(data["tasks"]) if t.get("status") == "pending"]
+        if available_tasks:
+            lookup = {t["task_id"]: t for t in available_tasks}
+            selected = st.session_state.get("cp_timesheet_pick_task")
+            ix = list(lookup).index(selected) if selected in lookup else 0
+            with st.form("cp_timesheet_manual_form"):
+                task_id = st.selectbox("任務", list(lookup), index=ix,
+                                       format_func=lambda tid:
+                                       ("✦ AI " if lookup[tid].get("source") == "ai_confirmed" else "")
+                                       + lookup[tid]["title"])
+                day = st.date_input("日期", today.date() + timedelta(days=1),
+                                    key="cp_timesheet_manual_date")
+                clock = st.time_input("開始時間", time(19, 0), step=900,
+                                      key="cp_timesheet_manual_start")
+                original_minutes = int(lookup[task_id]["estimated_minutes"])
+                minutes = st.number_input("時長（分鐘）", 15, 600,
+                                          min(600, max(15, ((original_minutes + 14) // 15) * 15)),
+                                          step=15, key="cp_timesheet_manual_duration")
+                if st.form_submit_button("預覽安排"):
+                    beginning = datetime.combine(day, clock, TZ)
+                    st.session_state["cp_pending_timesheet"] = {
+                        "kind": "place", "task_id": task_id,
+                        "start": beginning,
+                        "end": beginning + timedelta(minutes=int(minutes)),
+                    }
+                    st.rerun()
+
+    pending = st.session_state.get("cp_pending_timesheet")
+    if not pending:
+        st.caption("拖曳或拉長之後，請在這裡確認；未確認不會變更儲存資料。")
+        return
+    task = next((t for t in own(data["tasks"])
+                 if t.get("task_id") == pending.get("task_id")), None)
+    if not task:
+        st.session_state.pop("cp_pending_timesheet", None)
+        return
+    st.divider()
+    st.markdown("#### 確認時間表變更")
+    if pending.get("kind") == "unschedule":
+        st.info(f"將「{task['title']}」移回待排盒；此任務將暫停自動排程。")
+        a, b = st.columns(2)
+        if a.button("確認移回待排", type="primary", key="cp_unassign"):
+            def do_unassign():
+                unassign_task(USER_ID, task["task_id"], today)
+                st.session_state.pop("cp_pending_timesheet", None)
+                refresh_timesheet()
+            saved(do_unassign, "已移回待排")
+        if b.button("取消", key="cp_unassign_no"):
+            st.session_state.pop("cp_pending_timesheet", None)
+            refresh_timesheet()
+            st.rerun()
+        return
+    try:
+        proposal = propose_placement(
+            own(data["tasks"]), own(data["availability"]), own(data["plan"]),
+            own(data["events"]), USER_ID, task["task_id"],
+            pending["start"], pending["end"], today)
+    except (DataError, ValueError) as exc:
+        st.error(f"不能儲存這個時段：{exc}")
+        if st.button("取消此次移動", key="cp_bad_drop"):
+            st.session_state.pop("cp_pending_timesheet", None)
+            refresh_timesheet()
+            st.rerun()
+        return
+    st.write(f"**{task['title']}**：{proposal['start']:%Y-%m-%d %H:%M} — "
+             f"{proposal['end']:%H:%M}（{proposal['minutes']} 分鐘）")
+    override = None
+    if proposal["classes"]:
+        names = "、".join(item["title"] for item in proposal["classes"])
+        st.warning(f"這個時段覆蓋課程：「{names}」。"
+                   "如仍要安排，必須明確說明這次課程如何處理。")
+        override = st.radio("課程衝突原因", ("請假", "翹課", "停課"),
+                            index=None, key="cp_conflict_reason")
+        st.caption("這只是本人對此單次課程的紀錄，不會自動通知學校或改動 ee-class。")
+    a, b = st.columns(2)
+    if a.button("確認並儲存", type="primary", key="cp_placement_confirm",
+                disabled=bool(proposal["classes"]) and not override):
+        def commit_placement():
+            place_task(USER_ID, task["task_id"], proposal["start"],
+                       proposal["end"], override, today)
+            st.session_state.pop("cp_pending_timesheet", None)
+            refresh_timesheet()
+        saved(commit_placement, "任務時段已保存，排程已重新計算")
+    if b.button("取消變更", key="cp_placement_cancel"):
+        st.session_state.pop("cp_pending_timesheet", None)
+        refresh_timesheet()
+        st.rerun()
 
 
 def render_setup() -> None:
@@ -468,6 +655,8 @@ def render_overview() -> None:
     c2.metric("已建立課程", len(own(data["events"])))
     c3.metric("已安排讀書", sum(r.get("status") == "scheduled"
                                for r in own(data["plan"])))
+    st.write("")
+    render_progress_insights("overview")
     st.markdown('<div class="cp-divider"></div>', unsafe_allow_html=True)
     st.subheader("現在最重要的")
     if pending:
@@ -506,61 +695,72 @@ def render_tasks() -> None:
 
 
 def render_schedule() -> None:
-    hero("PLAN & CALENDAR", "掌握時間，不重造行事曆。",
-         "ClassPulse 負責安排與修改；Google／Apple Calendar 負責讓你隨時在手機查看。")
-    left, right = st.columns([1, 1], gap="large")
-    with left:
-        st.subheader("每週課程")
-        courses = sorted(own(data["events"]),
-                         key=lambda c: (c["weekday"], c["start_time"]))
-        for c in courses:
-            course_card(c)
-        if not courses:
-            st.info("尚未建立每週課程。")
-        screenshot_preview("planning")
-        with st.expander("＋ 新增課程"):
-            add_course_form("planning_course")
-    with right:
-        st.subheader("可用讀書時段")
-        slots = sorted(own(data["availability"]),
-                       key=lambda s: (s["date"], s["start_time"]))
-        for s in slots:
-            slot_card(s)
-        if not slots:
-            st.info("沒有可用時段，Scheduler 暫時無法安排。")
-        with st.expander("＋ 新增可用時段"):
-            add_slot_form("planning_slot")
-    st.markdown('<div class="cp-divider"></div>', unsafe_allow_html=True)
-    st.subheader("排程結果")
-    if st.button("重新安排讀書任務", type="primary"):
-        saved(generate_schedule, "讀書計畫已重新計算")
-    by_task = {t["task_id"]: t for t in own(data["tasks"])}
-    by_slot = {s["availability_id"]: s for s in own(data["availability"])}
-    plan = own(data["plan"])
-    if not plan:
-        st.caption("建立任務與時段後，按上方按鈕安排。")
-    for row in plan:
-        task = by_task.get(row.get("task_id"))
+    hero("VISUAL PLANNER", "把任務拖進你的時間裡。",
+         "上方待排任務盒連到時間格；拉動方塊長度後，確認儲存才會改變真正排程。")
+    render_timesheet()
+    st.write("")
+    if st.toggle("顯示進階管理（課程與可用時間）", value=False,
+                 key="cp_show_advanced_time_settings"):
+        left, right = st.columns(2, gap="large")
+        with left:
+            st.subheader("每週課程")
+            courses = sorted(own(data["events"]),
+                             key=lambda c: (c["weekday"], c["start_time"]))
+            for course in courses:
+                course_card(course)
+            screenshot_preview("planning")
+            with st.expander("＋ 新增課程"):
+                add_course_form("planning_course")
+        with right:
+            st.subheader("可用讀書時段")
+            slots = sorted((s for s in own(data["availability"])
+                            if s.get("origin") != "manual_calendar"),
+                           key=lambda s: (s["date"], s["start_time"]))
+            for slot in slots:
+                slot_card(slot)
+            with st.expander("＋ 新增可用時段"):
+                add_slot_form("planning_slot")
+    st.divider()
+    a, b = st.columns([1, 2], vertical_alignment="center")
+    with a:
+        if st.button("重新安排其他任務", type="primary", key="cp_timesheet_rebuild"):
+            saved(generate_schedule, "已重新排程；手動安排會優先保留")
+    with b:
+        st.caption("手動安排優先；其他任務依 Deadline 與時段容量自動安排。"
+                   "自動排程排除課程重疊時段。")
+    st.subheader("目前安排")
+    task_lookup = {task["task_id"]: task for task in own(data["tasks"])}
+    slot_lookup = {slot["availability_id"]: slot for slot in own(data["availability"])}
+    for row in own(data["plan"]):
+        task = task_lookup.get(row.get("task_id"))
         if not task or task.get("status") == "completed":
             continue
         if row.get("status") != "scheduled":
-            st.warning(f"{task['title']}：{row.get('reason') or '目前沒有可用時段'}")
+            st.warning(f"{task['title']}：{row.get('reason') or '尚未安排'}")
             continue
-        slot = by_slot.get(row.get("availability_id"))
-        if slot is None:
+        slot = slot_lookup.get(row.get("availability_id"))
+        if not slot:
             continue
         with st.container(border=True):
-            st.write(f"**{task['title']}**")
-            st.caption(f"{slot['date']} {slot['start_time']}  ·  "
-                       f"{task['estimated_minutes']} 分鐘")
+            st.write("**" + ("✦ AI 建議 · " if task.get("source") == "ai_confirmed" else "")
+                     + task["title"] + "**")
+            st.caption(f"{slot['date']} {slot['start_time']} · "
+                       f"{task['estimated_minutes']} 分鐘 · "
+                       f"{'手動安排' if row.get('source') == 'manual' else '自動安排'}")
+            if row.get("class_override"):
+                st.warning(f"覆蓋課程：{row['class_override']}（僅本人紀錄，未通知學校）")
             try:
-                begins, ends = task_calendar_event(task, slot)
-                url = google_calendar_url("讀書｜" + task["title"], begins, ends,
-                                          "ClassPulse 讀書計畫")
-                st.link_button("新增到 Google Calendar", url)
+                beginning, ending = task_calendar_event(task, slot)
+                st.link_button("加入 Google Calendar",
+                               google_calendar_url("讀書｜" + task["title"],
+                                                   beginning, ending))
+                if beginning > today:
+                    if st.button("移回待排", key=f"cp_unplan_{task['task_id']}"):
+                        saved(lambda task_id=task["task_id"]:
+                              unassign_task(USER_ID, task_id, today), "已移回待排")
             except (ValueError, KeyError):
-                st.caption("此筆時段格式不完整，暫無法產生行事曆連結。")
-    st.caption("手機行事曆整包匯出請到「連接與匯出」；此頁不維護第二套行事曆資料。")
+                st.caption("此排程時間格式不完整，無法產生單一行事曆連結。")
+    st.caption("整體匯出請在「連接與匯出」下載 .ics。匯入手機後不是即時同步。")
 
 
 def render_feedback() -> None:

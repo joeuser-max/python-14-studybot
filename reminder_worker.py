@@ -149,6 +149,12 @@ def run_reminder_worker_once(now: datetime | None = None) -> list[dict]:
         elif reminder["kind"] == "study_session":
             task = task_map.get(reminder["task_id"], {})
             text = f"讀書時段開始囉！任務：{task.get('title', reminder['task_id'])}，請開始完成。"
+            planned_row = next(
+                (p for p in plan if p.get("task_id") == reminder["task_id"]
+                 and p.get("availability_id") == reminder.get("availability_id")), {}
+            )
+            if planned_row.get("class_override"):
+                text += f" 注意：這個時間與課程重疊，你標註為「{planned_row['class_override']}」。"
         else:
             task = task_map.get(reminder["task_id"], {})
             text = f"提醒：任務「{task.get('title', reminder['task_id'])}」尚未排入。原因："

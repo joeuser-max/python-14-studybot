@@ -41,3 +41,35 @@ def test_disabled_class_feedback_does_not_push(monkeypatch, tmp_path):
     with pytest.raises(StopLoop):
         worker.run_reminder_worker()
     assert storage.load_json(storage.data_path("reminders")) == []
+
+
+def test_study_reminder_mentions_class_overlap_choice(monkeypatch, tmp_path):
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+
+    monkeypatch.setattr(storage, "DATA_DIR", tmp_path)
+    storage.select_demo_storage(False)
+    user = {"user_id": "u1", "line_user_id": "U-example",
+            "study_reminders_enabled": True, "reminders_enabled": True}
+    task = {"task_id": "t1", "user_id": "u1", "status": "pending",
+            "title": "複習控制系統"}
+    slot = {"availability_id": "slot1", "user_id": "u1",
+            "date": "2026-11-27", "start_time": "19:00", "available_minutes": 45}
+    plan = {"task_id": "t1", "user_id": "u1", "availability_id": "slot1",
+            "status": "scheduled", "class_override": "請假"}
+    for name, rows in (("events", []), ("tasks", [task]), ("availability", [slot]),
+                       ("users", [user]), ("plan", [plan]), ("reminders", [])):
+        storage.save_json(storage.data_path(name), rows)
+    sent = []
+
+    def fake_push(_user, _reminder, message):
+        sent.append(message)
+        return True
+
+    monkeypatch.setattr(worker, "push_line_message", fake_push)
+    results = worker.run_reminder_worker_once(
+        datetime(2026, 11, 27, 19, tzinfo=ZoneInfo("Asia/Taipei")))
+    assert len(results) == 1
+    assert results[0]["status"] == "sent"
+    assert "請假" in sent[0]
+    assert "與課程重疊" in sent[0]

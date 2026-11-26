@@ -115,9 +115,20 @@ def sample_records(now: datetime | None = None) -> dict[str, list]:
         "scheduled_at": now.isoformat(timespec="seconds"),
         "sent_at": now.isoformat(timespec="seconds"), "retry_key": "",
     }]
+    sample_completed_at = (now - timedelta(days=2)).replace(
+        hour=20, minute=15, second=0, microsecond=0
+    )
+    sample_progress_events = [{
+        "task_id": "demo_task_done", "user_id": DEMO_USER_ID,
+        "timestamp": sample_completed_at.isoformat(timespec="seconds"),
+        "old_percent": 0, "progress_percent": 100,
+        "status": "completed", "estimated_minutes": 30,
+        "source": "demo_seed",
+    }]
     return {
         "events": courses, "availability": availability, "tasks": tasks,
         "plan": plan, "feedback": feedback, "reminders": reminders,
+        "progress_events": sample_progress_events,
         "users": [{"user_id": DEMO_USER_ID, "line_user_id": "",
                    "reminders_enabled": True,
                    "study_reminders_enabled": True,
