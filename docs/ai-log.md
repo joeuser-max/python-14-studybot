@@ -40,3 +40,13 @@
 - 新增隔離、資料重設、筆記 ID 引用及完整展示用戶路徑回歸測試；GitHub Actions 驗證 43 個 Python 測試以及 Streamlit HTTP 服務啟動。
 
 使用者的正式課表尚未提供，因此目前的三門課均為**虛構展示資料**，不得標成個人的實際選課。
+
+## 2026-11-26：引導式控制台及 LINE 全天模擬（Onlynotonly）
+
+- 將 Streamlit 原始 Tab 表單整合為首次使用引導（每步可略過）與側欄 Dashboard；新 UI 保留既有 JSON Storage / Scheduler / LINE Webhook / AI Model API 模組接口。
+- 實作任務與時段卡片點擊後的編輯視窗、0–100% 任務進度以及同日同課的筆記群組顯示。
+- 提供單向 .ics（Google / Apple Calendar）與 Google Calendar 新增事件連結；不宣稱具有 OAuth 雙向同步功能。
+- 實作 08:00–21:00 LINE 虛擬情境：13 個場景，每一場三個固定回覆選項，保留回覆紀錄、理解度、是否接受 AI 任務、排程選擇與讀書進度。拒絕 AI 建議不應被模擬為已排程。
+- 延續現有 demo_data.py 的獨立展示資料，絕不傳送真實 LINE／AI 請求；Mock 分析清楚標示非實際模型輸出。
+- 針對純 Python 模擬引擎、ICS 時區、Streamlit 側欄逐頁導航及虛擬選項操作新增回歸測試。自動測試證明程式行為，但不能代替真人驗收全部視覺細節。
+- 此次新增工作由蕭博軒／Onlynotonly 提交於獨立 PR #6；B 組員莊育哲先前的排程與真實 LINE 功能提交未被冒用。
