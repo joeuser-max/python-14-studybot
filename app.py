@@ -148,6 +148,11 @@ with st.sidebar:
     if not onboarding_done and st.button("跳過初次設定", use_container_width=True):
         saved(lambda: persist_user({"onboarding_complete": True}), "已進入控制台")
     st.caption("LINE 一日展示皆為可重播的情境，不連接真實 LINE。")
+    with st.expander("Donate · Just for fun", expanded=False):
+        st.caption("支持 ClassPulse 的趣味彩蛋 · 非金流服務")
+        st.write("**銀行代碼：822**")
+        st.code("417540472590", language=None)
+        st.caption("僅顯示資訊；網站不會收款、驗證匯款或記錄捐款。")
 
 
 def hero(kicker: str, heading: str, intro: str) -> None:
