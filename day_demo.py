@@ -101,7 +101,50 @@ SCENES = (
 
 def new_day_state() -> dict:
     return {"index": 0, "awaiting_next": False, "messages": [],
-            "decisions": {}, "completed": False}
+            "decisions": {}, "completed": False,
+            "signals": {"understanding": None, "note": None,
+                        "accepted_task_minutes": None, "scheduled_at": None,
+                        "task_progress": None}}
+
+
+def incoming_for(state: dict) -> str:
+    """根據既有決策避免下一場景說出互相矛盾的提示。"""
+    scene = SCENES[state["index"]]
+    signals = state.get("signals", {})
+    if scene["time"] == "14:00" and signals.get("accepted_task_minutes") is None:
+        return "你尚未確認 AI 的建議任務；本時段會展示排程器的選項，但不會宣稱已排入。"
+    if scene["time"] == "19:00" and signals.get("scheduled_at") is None:
+        return "【模擬 LINE 推播】晚間讀書時段到了。還沒安排 AI 建議任務，可以先查看既有計畫。"
+    return scene["incoming"]
+
+
+def _reply_and_signals(state: dict, scene: dict, index: int) -> str:
+    """更新當天模擬狀態；不寫入 JSON，亦不與真實 LINE 連線。"""
+    signals = state["signals"]
+    time = scene["time"]
+    if time == "10:50":
+        signals["understanding"] = (5, 3, 1)[index]
+    elif time == "11:05":
+        signals["note"] = scene["options"][index][0]
+    elif time == "13:00":
+        signals["accepted_task_minutes"] = (45, 30, None)[index]
+    elif time == "14:00":
+        if signals["accepted_task_minutes"] is None:
+            signals["scheduled_at"] = None
+            return "沒有經你確認的 AI 任務，排程器不會擅自將它加入計畫。這裡只展示可用時段操作。"
+        signals["scheduled_at"] = ("19:00", "20:00", None)[index]
+        if index == 2:
+            return "已展示其他時段與可能衝突；此時仍未確認最終排程。"
+        return (f"已模擬把已確認的 {signals['accepted_task_minutes']} 分鐘複習任務"
+                f"安排在 {signals['scheduled_at']}；未寫入正式資料。")
+    elif time == "20:15":
+        signals["task_progress"] = (100, 70, 0)[index]
+    elif time == "21:00" and index == 0:
+        return ("【Mock 今日統計】筆記："
+                f"{1 if signals['note'] else 0} 則；"
+                f"已確認 AI 任務：{1 if signals['accepted_task_minutes'] else 0} 項；"
+                f"晚間回報完成度：{signals['task_progress'] if signals['task_progress'] is not None else '未提供'}%。")
+    return scene["options"][index][1]
 
 
 def respond(state: dict, option_index: int) -> dict:
@@ -112,9 +155,11 @@ def respond(state: dict, option_index: int) -> dict:
         raise ValueError("請選擇三個選項之一")
     updated = deepcopy(state)
     scene = SCENES[updated["index"]]
-    selected, reply = scene["options"][option_index]
+    selected, _ = scene["options"][option_index]
+    incoming = incoming_for(state)
+    reply = _reply_and_signals(updated, scene, option_index)
     updated["messages"].extend([
-        {"at": scene["time"], "role": "bot", "text": scene["incoming"]},
+        {"at": scene["time"], "role": "bot", "text": incoming},
         {"at": scene["time"], "role": "user", "text": selected},
         {"at": scene["time"], "role": "bot", "text": reply},
     ])
@@ -140,5 +185,5 @@ def visible_messages(state: dict) -> list[dict]:
     messages = list(state["messages"])
     if not state["awaiting_next"] and not state["completed"]:
         scene = SCENES[state["index"]]
-        messages.append({"at": scene["time"], "role": "bot", "text": scene["incoming"]})
+        messages.append({"at": scene["time"], "role": "bot", "text": incoming_for(state)})
     return messages
