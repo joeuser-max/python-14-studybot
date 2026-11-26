@@ -84,6 +84,12 @@ def propose_placement(tasks: list[dict], slots: list[dict], plan: list[dict],
     task_by_id = {t["task_id"]: t for t in tasks if t.get("user_id") == user_id}
     slot_by_id = {s["availability_id"]: s for s in slots if s.get("user_id") == user_id}
     for row in plan:
+        if (row.get("user_id") == user_id and row.get("task_id") == task_id
+                and row.get("status") == "scheduled"):
+            previous_interval = plan_interval(row, task_by_id, slot_by_id)
+            if previous_interval and previous_interval[0] <= now:
+                raise storage.DataError("已開始或過去的原定時段不能移動")
+    for row in plan:
         if row.get("user_id") != user_id or row.get("task_id") == task_id:
             continue
         interval = plan_interval(row, task_by_id, slot_by_id)
