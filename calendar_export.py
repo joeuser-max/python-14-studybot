@@ -66,9 +66,12 @@ def export_calendar_ics(courses: list[dict], tasks: list[dict],
             begins = datetime.combine(date.fromisoformat(slot["date"]),
                                       time.fromisoformat(slot["start_time"]), TZ)
             ends = begins + timedelta(minutes=int(task["estimated_minutes"]))
+            description = f"科目：{task['subject']}；期限：{task['deadline']}"
+            if row.get("class_override"):
+                description += f"；與課程重疊（本人標註：{row['class_override']}）"
             lines += _event("study-" + task["task_id"],
                             "讀書｜" + task["title"], begins, ends,
-                            f"科目：{task['subject']}；期限：{task['deadline']}")
+                            description)
         except (KeyError, TypeError, ValueError):
             continue
     lines.append("END:VCALENDAR")
