@@ -71,7 +71,7 @@ with st.sidebar:
     st.divider()
     demo_mode = st.toggle("展示模式", value=False, key="classpulse_demo_mode")
     if demo_mode:
-        st.caption("虛構課表與 Mock 回覆，不對外發送訊息。")
+        st.caption("展示課表參考提供的截圖；完成數據為模擬範例，不對外發送 LINE。")
 
 select_demo_storage(demo_mode)
 if demo_mode:
@@ -429,6 +429,103 @@ def refresh_timesheet() -> None:
     st.session_state.pop("cp_last_timesheet_change", None)
 
 
+@st.dialog("確認時段調整", width="large")
+def show_timesheet_confirmation() -> None:
+    """日曆拖曳後立即彈出確認視窗；內容以當下真實 JSON 重新檢查。"""
+    sync_storage_context()
+    pending = st.session_state.get("cp_pending_timesheet")
+    if not pending:
+        return
+    fresh = read_all()
+    my_tasks = [t for t in fresh["tasks"] if t.get("user_id") == USER_ID]
+    task = next((t for t in my_tasks
+                 if t.get("task_id") == pending.get("task_id")), None)
+    if task is None:
+        st.error("任務已不存在，請重新整理後再試。")
+        if st.button("關閉", key="cp_dialog_missing"):
+            st.session_state.pop("cp_pending_timesheet", None)
+            refresh_timesheet()
+            st.rerun()
+        return
+
+    st.write(f"**{task['title']}**")
+    if pending.get("kind") == "unschedule":
+        st.info("這個動作會把任務移回待排盒，並暫停自動排程。")
+        a, b = st.columns(2)
+        if a.button("確認移回待排", type="primary", key="cp_unassign"):
+            def do_unassign():
+                unassign_task(USER_ID, task["task_id"], datetime.now(TZ))
+                st.session_state.pop("cp_pending_timesheet", None)
+                refresh_timesheet()
+            saved(do_unassign, "已移回待排")
+        if b.button("取消", key="cp_unassign_no"):
+            st.session_state.pop("cp_pending_timesheet", None)
+            refresh_timesheet()
+            st.rerun()
+        return
+
+    try:
+        proposal = propose_placement(
+            my_tasks,
+            [s for s in fresh["availability"] if s.get("user_id") == USER_ID],
+            [p for p in fresh["plan"] if p.get("user_id") == USER_ID],
+            [c for c in fresh["events"] if c.get("user_id") == USER_ID],
+            USER_ID, task["task_id"], pending["start"], pending["end"],
+            datetime.now(TZ),
+        )
+    except (DataError, ValueError) as exc:
+        st.error(f"無法安排這個時段：{exc}")
+        if st.button("取消這次拖曳", key="cp_bad_drop"):
+            st.session_state.pop("cp_pending_timesheet", None)
+            refresh_timesheet()
+            st.rerun()
+        return
+
+    st.caption(f"{proposal['start']:%Y-%m-%d %H:%M} — {proposal['end']:%H:%M}，"
+               f"共 {proposal['minutes']} 分鐘")
+    reason = None
+    if proposal["classes"]:
+        st.error("與既有課程時間重疊，必須選擇如何處理。")
+        for course in proposal["classes"]:
+            st.write(f"**衝突課程：{course['title']}**")
+            st.caption(f"{course['start'][11:16]}–{course['end'][11:16]}")
+        choice = st.radio(
+            "重疊部分是否要覆蓋？",
+            ("保留原課程（不覆蓋）", "覆蓋課程時段（需說明原因）"),
+            index=None,
+            key="cp_override_choice_" + task["task_id"] + "_" +
+                proposal["start"].strftime("%Y%m%d%H%M") + "_" +
+                proposal["end"].strftime("%H%M"),
+        )
+        if choice == "覆蓋課程時段（需說明原因）":
+            reason = st.radio(
+                "請選擇原因", ("請假", "翹課", "停課"), index=None,
+                key="cp_override_" + task["task_id"] + "_" +
+                    proposal["start"].strftime("%Y%m%d%H%M") + "_" +
+                    proposal["end"].strftime("%H%M"),
+            )
+            st.caption("只會儲存你的個人安排，不會向學校提出請假或修改 ee-class。")
+        elif choice == "保留原課程（不覆蓋）":
+            st.info("選擇下方「不覆蓋，取消調整」，原課表及原讀書安排都不會改變。")
+    else:
+        st.success("沒有與固定課程重疊。")
+    a, b = st.columns(2)
+    if a.button("確認覆蓋並儲存" if proposal["classes"] else "確認並儲存",
+                type="primary", disabled=bool(proposal["classes"]) and not reason,
+                key="cp_placement_confirm"):
+        def commit_placement():
+            place_task(USER_ID, task["task_id"], proposal["start"], proposal["end"],
+                       reason, datetime.now(TZ))
+            st.session_state.pop("cp_pending_timesheet", None)
+            refresh_timesheet()
+        saved(commit_placement, "已儲存任務安排")
+    if b.button("不覆蓋，取消調整" if proposal["classes"] else "取消變更",
+                key="cp_placement_cancel"):
+        st.session_state.pop("cp_pending_timesheet", None)
+        refresh_timesheet()
+        st.rerun()
+
+
 def render_timesheet() -> None:
     """拖曳與拉長的視覺排程：時間座標須由後端檢核並確認才真正儲存。"""
     st.subheader("拖曳式時間表")
@@ -461,6 +558,7 @@ def render_timesheet() -> None:
     """
     try:
         response = editable_calendar(events=events, options=options, custom_css=css,
+                                     callbacks=["eventChange", "eventClick"],
                                      key=f"cp_timesheet_calendar_{week_date.isoformat()}_v{st.session_state.get('cp_timesheet_epoch', 0)}")
     except Exception as exc:
         st.error(f"互動日曆無法載入：{exc}")
@@ -521,66 +619,11 @@ def render_timesheet() -> None:
                     }
                     st.rerun()
 
-    pending = st.session_state.get("cp_pending_timesheet")
-    if not pending:
-        st.caption("拖曳或拉長之後，請在這裡確認；未確認不會變更儲存資料。")
-        return
-    task = next((t for t in own(data["tasks"])
-                 if t.get("task_id") == pending.get("task_id")), None)
-    if not task:
-        st.session_state.pop("cp_pending_timesheet", None)
-        return
-    st.divider()
-    st.markdown("#### 確認時間表變更")
-    if pending.get("kind") == "unschedule":
-        st.info(f"將「{task['title']}」移回待排盒；此任務將暫停自動排程。")
-        a, b = st.columns(2)
-        if a.button("確認移回待排", type="primary", key="cp_unassign"):
-            def do_unassign():
-                unassign_task(USER_ID, task["task_id"], today)
-                st.session_state.pop("cp_pending_timesheet", None)
-                refresh_timesheet()
-            saved(do_unassign, "已移回待排")
-        if b.button("取消", key="cp_unassign_no"):
-            st.session_state.pop("cp_pending_timesheet", None)
-            refresh_timesheet()
-            st.rerun()
-        return
-    try:
-        proposal = propose_placement(
-            own(data["tasks"]), own(data["availability"]), own(data["plan"]),
-            own(data["events"]), USER_ID, task["task_id"],
-            pending["start"], pending["end"], today)
-    except (DataError, ValueError) as exc:
-        st.error(f"不能儲存這個時段：{exc}")
-        if st.button("取消此次移動", key="cp_bad_drop"):
-            st.session_state.pop("cp_pending_timesheet", None)
-            refresh_timesheet()
-            st.rerun()
-        return
-    st.write(f"**{task['title']}**：{proposal['start']:%Y-%m-%d %H:%M} — "
-             f"{proposal['end']:%H:%M}（{proposal['minutes']} 分鐘）")
-    override = None
-    if proposal["classes"]:
-        names = "、".join(item["title"] for item in proposal["classes"])
-        st.warning(f"這個時段覆蓋課程：「{names}」。"
-                   "如仍要安排，必須明確說明這次課程如何處理。")
-        override = st.radio("課程衝突原因", ("請假", "翹課", "停課"),
-                            index=None, key="cp_conflict_reason")
-        st.caption("這只是本人對此單次課程的紀錄，不會自動通知學校或改動 ee-class。")
-    a, b = st.columns(2)
-    if a.button("確認並儲存", type="primary", key="cp_placement_confirm",
-                disabled=bool(proposal["classes"]) and not override):
-        def commit_placement():
-            place_task(USER_ID, task["task_id"], proposal["start"],
-                       proposal["end"], override, today)
-            st.session_state.pop("cp_pending_timesheet", None)
-            refresh_timesheet()
-        saved(commit_placement, "任務時段已保存，排程已重新計算")
-    if b.button("取消變更", key="cp_placement_cancel"):
-        st.session_state.pop("cp_pending_timesheet", None)
-        refresh_timesheet()
-        st.rerun()
+    # 將確認及衝突原因放在 Modal，不會被 650px 高的日曆蓋到畫面下方。
+    if st.session_state.get("cp_pending_timesheet"):
+        show_timesheet_confirmation()
+    else:
+        st.caption("拖曳或拉長方塊後會跳出確認視窗；未確認不會儲存。")
 
 
 def render_setup() -> None:
@@ -723,11 +766,12 @@ def render_overview() -> None:
          "不必在每個工具裡重複管理。這裡只保留真正需要你決定的事情。")
     tasks = own(data["tasks"])
     pending = [t for t in tasks if t.get("status") != "completed"]
-    c1, c2, c3 = st.columns(3)
+    c1, c2, c3, c4 = st.columns(4)
     c1.metric("待完成任務", len(pending))
-    c2.metric("已建立課程", len(own(data["events"])))
+    c2.metric("已建立課次", len(own(data["events"])))
     c3.metric("已安排讀書", sum(r.get("status") == "scheduled"
                                for r in own(data["plan"])))
+    c4.metric("目前已完成", sum(t.get("status") == "completed" for t in tasks))
     st.write("")
     render_progress_insights("overview")
     st.markdown('<div class="cp-divider"></div>', unsafe_allow_html=True)
@@ -737,6 +781,38 @@ def render_overview() -> None:
             task_card(task)
     else:
         st.success("目前沒有待完成的任務。")
+    st.write("")
+    st.subheader("最近完成")
+    completed_lookup = {t["task_id"]: t for t in tasks
+                        if t.get("status") == "completed"}
+    latest_completed = sorted(
+        (entry for entry in own(data["progress_events"])
+         if entry.get("status") == "completed"
+         and entry.get("task_id") in completed_lookup),
+        key=lambda entry: entry.get("timestamp", ""), reverse=True,
+    )
+    shown_ids = set()
+    recent = []
+    for entry in latest_completed:
+        if entry["task_id"] in shown_ids:
+            continue
+        shown_ids.add(entry["task_id"])
+        recent.append((completed_lookup[entry["task_id"]], entry))
+        if len(recent) == 5:
+            break
+    if recent:
+        with st.container(border=True):
+            for i, (item, entry) in enumerate(recent):
+                if i:
+                    st.divider()
+                label = " · 範例紀錄" if entry.get("source") == "demo_seed" else ""
+                st.write(f"✓ **{item['title']}**")
+                st.caption(f"{item['subject']} · {entry['timestamp'][:16].replace('T', ' ')}"
+                           f" · 預估 {item['estimated_minutes']} 分鐘{label}")
+        if demo_mode:
+            st.caption("展示完成紀錄為範例；正式模式只顯示實際已儲存的完成事件。")
+    else:
+        st.caption("完成並儲存任務後，這裡就會顯示最近的成果。")
     st.write("")
     st.subheader("下一步")
     a, b, c = st.columns(3)
