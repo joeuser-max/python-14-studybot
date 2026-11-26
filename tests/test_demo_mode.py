@@ -72,3 +72,68 @@ def test_mock_ai_suggestions_reference_feedback_without_api():
     assert result["suggestions"][0]["source_feedback_id"] == records["feedback"][0]["feedback_id"]
     assert mock_learning_suggestions([], records["events"])["suggestions"] == []
     assert mock_learning_suggestions(records["feedback"], records["events"], "unknown")["suggestions"] == []
+
+
+def test_demo_user_journey_edit_feedback_confirm_task_and_schedule(monkeypatch, tmp_path):
+    """以展示使用者的路徑驗證：修改課程 → 模擬 LINE 回覆 → Mock AI → 確認任務 → 排程。"""
+    from exporter import export_learning_markdown
+    from scheduler import make_plan
+    from plan_bridge import normalize_plan_result
+
+    monkeypatch.setattr(storage, "DATA_DIR", tmp_path / "real")
+    monkeypatch.setattr(storage, "DEMO_DATA_DIR", tmp_path / "demo")
+    storage.select_demo_storage(False)
+    storage.save_json(storage.data_path("events"), [{"event_id": "untouched-real-class"}])
+
+    try:
+        storage.select_demo_storage(True)
+        seed_demo_data(now=NOW)
+        course = storage.load_json(storage.data_path("events"))[0]
+        storage.update_event({**course, "title": "我現場修改的課程"})
+        edited = storage.load_json(storage.data_path("events"))[0]
+        assert edited["title"] == "我現場修改的課程"
+
+        feedback = {
+            "feedback_id": "demo-feedback-new", "user_id": "demo_user_001",
+            "event_id": edited["event_id"], "class_date": NOW.date().isoformat(),
+            "received_at": NOW.isoformat(timespec="seconds"), "source": "demo",
+            "content": "課程內容還有一個問題需要練習", "progress": 2,
+            "reminder_id": "", "webhook_event_id": "demo-event-new",
+        }
+        assert storage.save_feedback(feedback) is True
+        response = mock_learning_suggestions(
+            storage.load_json(storage.data_path("feedback")),
+            storage.load_json(storage.data_path("events")),
+        )
+        suggestion = response["suggestions"][0]
+        # 檢查使用者確認的建議才會成為正式任務
+        assert not any(t.get("source_feedback_id") == suggestion["source_feedback_id"]
+                       for t in storage.load_json(storage.data_path("tasks")))
+        task = {
+            "task_id": "confirmed-demo-task", "user_id": "demo_user_001",
+            "subject": suggestion["topic"], "title": suggestion["suggested_task"],
+            "deadline": (NOW.date() + __import__("datetime").timedelta(days=7)).isoformat(),
+            "estimated_minutes": 30, "status": "pending",
+            "preferred_availability_id": "",
+            "source_feedback_id": suggestion["source_feedback_id"],
+            "source": "ai_confirmed",
+        }
+        storage.add_task_to_storage(task)
+        tasks = storage.load_json(storage.data_path("tasks"))
+        slots = storage.load_json(storage.data_path("availability"))
+        planned = make_plan(tasks, slots, storage.load_json(storage.data_path("plan")), NOW)
+        normalized = normalize_plan_result(planned, "demo_user_001")
+        assert any(row["task_id"] == task["task_id"] and row["status"] == "scheduled"
+                   for row in normalized)
+
+        records = {name: storage.load_json(storage.data_path(name))
+                   for name in ("events", "tasks", "availability", "plan",
+                                "reminders", "feedback")}
+        markdown = export_learning_markdown(records, NOW, "demo_user_001")
+        assert "我現場修改的課程" in markdown
+        assert "課程內容還有一個問題需要練習" in markdown
+    finally:
+        storage.select_demo_storage(False)
+    assert storage.load_json(storage.data_path("events")) == [
+        {"event_id": "untouched-real-class"}
+    ]
