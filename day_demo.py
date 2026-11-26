@@ -114,6 +114,7 @@ def respond(state: dict, option_index: int) -> dict:
     scene = SCENES[updated["index"]]
     selected, reply = scene["options"][option_index]
     updated["messages"].extend([
+        {"at": scene["time"], "role": "bot", "text": scene["incoming"]},
         {"at": scene["time"], "role": "user", "text": selected},
         {"at": scene["time"], "role": "bot", "text": reply},
     ])
