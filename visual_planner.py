@@ -220,7 +220,12 @@ def calendar_change_candidate(value: dict, tasks: list[dict]) -> dict | None:
         return None
     task_id = event_id.removeprefix("task:")
     task = next((t for t in tasks if t.get("task_id") == task_id), None)
-    if task is None or event.get("allDay"):
+    if task is None:
+        return None
+    if event.get("allDay"):
+        before = value.get("eventChange", {}).get("oldEvent", {})
+        if before.get("allDay") is False:
+            return {"kind": "unschedule", "task_id": task_id}
         return None
     start = event.get("start")
     if not start:
@@ -229,7 +234,7 @@ def calendar_change_candidate(value: dict, tasks: list[dict]) -> dict | None:
     beginning = as_local(start)
     ending = as_local(end) if end else beginning + timedelta(
         minutes=int(task["estimated_minutes"]))
-    return {"task_id": task_id, "start": beginning, "end": ending}
+    return {"kind": "place", "task_id": task_id, "start": beginning, "end": ending}
 
 
 def board_events(courses: list[dict], slots: list[dict], tasks: list[dict],
