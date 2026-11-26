@@ -71,7 +71,10 @@ def test_edit_existing_and_new_demo_tasks_without_live_mutation(monkeypatch, tmp
     assert edited["demo_task_control"]["progress_percent"] == 60
     assert edited["user-added-task"]["title"] == "新增後也可修改"
     assert edited["user-added-task"]["progress_percent"] == 30
-    assert storage.load_json(demo / "plan.json") == []
+    # 新版行為：修改任務會重新計算排程，而不是清空整份計畫。
+    plan = storage.load_json(demo / "plan.json")
+    assert any(row.get("task_id") == "demo_task_control" for row in plan)
+    assert len(storage.load_json(demo / "progress_events.json")) >= 2
 
 
 def test_delete_demo_task_does_not_touch_live(monkeypatch, tmp_path):
