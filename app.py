@@ -686,7 +686,8 @@ def render_schedule() -> None:
          "上方待排任務盒連到時間格；拉動方塊長度後，確認儲存才會改變真正排程。")
     render_timesheet()
     st.write("")
-    with st.expander("進階管理：每週課表與可用時間", expanded=False):
+    if st.toggle("顯示進階管理（課程與可用時間）", value=False,
+                 key="cp_show_advanced_time_settings"):
         left, right = st.columns(2, gap="large")
         with left:
             st.subheader("每週課程")
