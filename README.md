@@ -6,6 +6,22 @@
 - **B 功能**：固定／自動讀書排程、LINE Webhook 補筆記、課後與讀書時段提醒 Worker。
 - **目前限制**：單一測試使用者 `demo_user_001`、本機 JSON 資料；不是正式多人服務。
 
+## macOS／Linux 快速啟動
+
+專案已有 Streamlit 網頁，無須另外建立 HTML 網站。安裝 Python 3.11 以上後，在專案根目錄執行：
+
+```bash
+python3 -m venv .venv
+source .venv/bin/activate
+python -m pip install -r requirements.txt
+python -m pytest -q
+python -m streamlit run app.py
+```
+
+開啟 `http://localhost:8501`，即可使用課表、讀書排程、行事曆及 Markdown 匯出。若尚未設定 LINE 與 AI API，核心網頁功能仍可操作；真正 LINE/Webhook 需額外啟動 Flask 和提醒 Worker。以下 Windows 操作手冊提供完整的服務設定示範。
+
+**API MVP 驗收界線：**`ai_assistant.py` 有真實 OpenAI Responses API 的 HTTP 請求、JSON Schema 驗證與錯誤處理；測試以 Mock Response 證明資料流，不代表已有真實付費 API 成功回應。
+
 ## 1. 準備環境
 
 以下步驟以 Windows PowerShell 為例。建議使用 **64 位元 Python 3.11**；若已安裝 Python Launcher，先確認：
@@ -188,18 +204,18 @@ LINE 不能直接連到 `localhost`，需用 HTTPS Tunnel 將公網請求轉到�
    & $ngrok http 5000
    ```
 
-   保持視窗開啟，複製輸出中 `Forwarding https://company-record-valuables.ngrok-free.dev` 的 HTTPS 網址。
+   保持視窗開啟，複製輸出中 `Forwarding https://your-ngrok-subdomain.ngrok-free.dev` 的 HTTPS 網址。
 
 5. 在 LINE Developers Console 依序選擇 Provider → 對應的 **Messaging API Channel** → **Messaging API** 分頁 → **Webhook settings**：
 
-   - Webhook URL 填入剛才的 HTTPS 網址並加上 `/webhook`，格式為 `https://company-record-valuables.ngrok-free.dev/webhook`。
+   - Webhook URL 填入剛才的 HTTPS 網址並加上 `/webhook`，格式為 `https://your-ngrok-subdomain.ngrok-free.dev/webhook`。
    - 開啟 **Use webhook**，再按 **Verify**。
 
 **Use webhook** 開啟後，LINE 才會把訊息事件送到 Flask。Webhook 只接受有效 LINE 簽章；不要為了測試而關閉簽章驗證。ngrok 網址是公開連線入口，不要公開分享；停止 Tunnel 請在該視窗按 `Ctrl+C`。Tunnel 重啟後若網址改變，需更新 Webhook URL 並再次 Verify。
 
 ### 5.4 用 LINE 綁定測試使用者
 
-先用自己的 LINE 加入官方帳號好友，然後在聊天室傳送 `綁定 studybot-test-2026-7391`。例如若你設定的碼是 `my-test-code-1234`，就傳送 `綁定 my-test-code-1234`；`<...>` 和文件中的佔位文字不要照抄。
+先用自己的 LINE 加入官方帳號好友，然後在聊天室傳送 `綁定 <自行設定的測試綁定碼>`。例如若你設定的碼是 `my-test-code-1234`，就傳送 `綁定 my-test-code-1234`；`<...>` 和文件中的佔位文字不要照抄。
 
 成功後，Webhook 會將該 LINE 帳號綁定至 `demo_user_001`。回到 Streamlit 重新整理，在「課表與時段」的 LINE 提醒設定確認已綁定，並打開想測試的提醒。綁定碼錯誤時，確認 Flask 啟動前設定的 `LINE_BINDING_CODE` 與傳送內容完全相同。
 
