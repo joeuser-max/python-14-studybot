@@ -73,15 +73,41 @@ def sample_records(now: datetime | None = None) -> dict[str, list]:
         "suggested_task": "練習撰寫包含預設參數的函式",
         "estimated_minutes": 45,
     }
-    feedback = [{
-        "feedback_id": "demo_feedback_programming", "user_id": DEMO_USER_ID,
-        "event_id": "demo_class_programming", "class_date": class_date,
-        "received_at": now.isoformat(timespec="seconds"),
-        "content": "今天學到 Python 函式與參數，但不太確定預設參數什麼時候會生效。",
-        "progress": 3, "source": "demo", "reminder_id": "demo_reminder_programming",
-        "webhook_event_id": "demo_webhook_programming",
-        "ai_analysis": example_analysis,
-    }]
+    # 三則展示筆記：前兩則屬於同一天、同一課次，可測試 UI 群組顯示。
+    control_date = _recent_completed_class_date(now, 3, 15)
+    feedback = [
+        {
+            "feedback_id": "demo_feedback_programming",
+            "user_id": DEMO_USER_ID,
+            "event_id": "demo_class_programming", "class_date": class_date,
+            "received_at": f"{class_date}T11:05:00+08:00",
+            "content": "今天學到 Python 函式與參數，但不太確定預設參數什麼時候會生效。",
+            "progress": 3, "source": "demo",
+            "reminder_id": "demo_reminder_programming",
+            "webhook_event_id": "demo_webhook_programming",
+            "ai_analysis": example_analysis,
+        },
+        {
+            "feedback_id": "demo_feedback_programming_followup",
+            "user_id": DEMO_USER_ID,
+            "event_id": "demo_class_programming", "class_date": class_date,
+            "received_at": f"{class_date}T11:22:00+08:00",
+            "content": "補充筆記：預設參數在呼叫函式時未指定該參數才會生效；還想練習幾個例子。",
+            "progress": 4, "source": "demo",
+            "reminder_id": "",
+            "webhook_event_id": "demo_webhook_programming_followup",
+        },
+        {
+            "feedback_id": "demo_feedback_control",
+            "user_id": DEMO_USER_ID,
+            "event_id": "demo_class_control", "class_date": control_date,
+            "received_at": f"{control_date}T15:16:00+08:00",
+            "content": "控制系統講到 Routh 判據；我還不清楚符號變化如何對應右半平面極點的數量。",
+            "progress": 2, "source": "demo",
+            "reminder_id": "",
+            "webhook_event_id": "demo_webhook_control",
+        },
+    ]
     reminders = [{
         "reminder_id": "demo_reminder_programming", "user_id": DEMO_USER_ID,
         "event_id": "demo_class_programming", "task_id": "", "availability_id": "",
