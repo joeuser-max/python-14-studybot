@@ -61,7 +61,25 @@ def history_series(events: list[dict], tasks: list[dict], user_id: str,
         if completed_on in daily:
             daily[completed_on]["completed"] += 1
             daily[completed_on]["planned_minutes"] += max(0, int(ev.get("estimated_minutes", 0)))
-    rows = [{"date": day.isoformat(), **data} for day, data in daily.items()]
+    if period == "1D":
+        hourly = {f"{hour:02d}:00": {"completed": 0, "planned_minutes": 0}
+                  for hour in range(24)}
+        for task_id, entry in latest.items():
+            task = own_tasks[task_id]
+            ev = entry["event"]
+            if (task.get("status") != "completed" or ev.get("status") != "completed"
+                    or entry["time"].date() != now.date()):
+                continue
+            item = hourly[f"{entry['time'].hour:02d}:00"]
+            item["completed"] += 1
+            item["planned_minutes"] += max(0, int(ev.get("estimated_minutes", 0)))
+        rows = [{"date": clock, **data} for clock, data in hourly.items()]
+    else:
+        rows = [{"date": day.isoformat(), **data} for day, data in daily.items()]
+    cumulative = 0
+    for item in rows:
+        cumulative += item["completed"]
+        item["cumulative"] = cumulative
     return {
         "period": period,
         "completed": sum(x["completed"] for x in rows),
