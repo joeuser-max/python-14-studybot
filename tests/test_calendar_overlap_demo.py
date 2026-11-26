@@ -137,4 +137,4 @@ def test_dashboard_lists_finished_example_tasks(monkeypatch, tmp_path):
     text = "\n".join(str(item.value) for item in app.markdown)
     assert "完成 PID 控制器練習" in text
     assert "整理傅立葉轉換與頻譜" in text
-    assert "範例紀錄" in text
+    assert any("範例紀錄" in item.value for item in app.caption)
