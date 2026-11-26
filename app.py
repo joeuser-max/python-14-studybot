@@ -86,8 +86,18 @@ def persist_user(values: dict) -> None:
     update_json(data_path("users"), update)
 
 
+def sync_storage_context() -> None:
+    """Streamlit dialog fragments may rerun without the sidebar/top-level setup.
+
+    ContextVar is scoped to the executing context, so restore the data directory
+    from this session's demo switch BEFORE any dialog read or write.
+    """
+    select_demo_storage(bool(st.session_state.get("classpulse_demo_mode", False)))
+
+
 def saved(action, message: str) -> None:
     try:
+        sync_storage_context()
         action()
     except (DataError, ValueError, OSError) as exc:
         st.error(str(exc))
@@ -218,6 +228,7 @@ def add_slot_form(prefix: str) -> None:
 
 @st.dialog("修改任務")
 def task_dialog(task: dict) -> None:
+    sync_storage_context()
     st.caption(f"{task['subject']} · 點選後直接編輯，不需要另外找選單。")
     with st.form(f"cp_edit_task_{task['task_id']}"):
         title = st.text_input("任務名稱", value=task["title"])
@@ -259,6 +270,7 @@ def task_dialog(task: dict) -> None:
 
 @st.dialog("修改讀書時段")
 def slot_dialog(slot: dict) -> None:
+    sync_storage_context()
     with st.form(f"cp_edit_slot_{slot['availability_id']}"):
         day = st.date_input("日期", value=date.fromisoformat(slot["date"]))
         a, b = st.columns(2)
@@ -292,6 +304,7 @@ def slot_dialog(slot: dict) -> None:
 
 @st.dialog("修改課程")
 def course_dialog(course: dict) -> None:
+    sync_storage_context()
     with st.form(f"cp_edit_course_{course['event_id']}"):
         title = st.text_input("課程名稱", value=course["title"])
         weekday = st.selectbox(
