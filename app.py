@@ -382,12 +382,7 @@ def course_card(course: dict) -> None:
 
 
 def generate_schedule() -> None:
-    from scheduler import make_plan
-    result = make_plan(own(data["tasks"]), own(data["availability"]),
-                       own(data["plan"]), today)
-    normalized = normalize_plan_result(result, USER_ID)
-    update_json(data_path("plan"),
-                lambda rows: merge_user_plan(rows, USER_ID, normalized))
+    rebuild_plan(USER_ID, today)
 
 
 def go_to(target: str) -> None:
@@ -647,6 +642,8 @@ def render_overview() -> None:
     c2.metric("已建立課程", len(own(data["events"])))
     c3.metric("已安排讀書", sum(r.get("status") == "scheduled"
                                for r in own(data["plan"])))
+    st.write("")
+    render_progress_insights("overview")
     st.markdown('<div class="cp-divider"></div>', unsafe_allow_html=True)
     st.subheader("現在最重要的")
     if pending:
