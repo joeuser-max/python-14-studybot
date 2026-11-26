@@ -584,74 +584,138 @@ def render_timesheet() -> None:
 
 
 def render_setup() -> None:
-    step = st.session_state.get("cp_setup_step", 0)
-    headings = ("一個更簡單的學習流程", "先讓 ClassPulse 認識你的課表",
-                "讓 LINE 成為日常互動入口", "告訴系統何時有空",
-                "最後，把行程帶到手機")
-    descriptions = (
-        "接下來只需要完成幾個必要設定。任何步驟都可以跳過，之後再補上。",
-        "先新增一門課，或上傳課表截圖預覽。還沒有完成圖片辨識，課程需手動確認。",
-        "LINE 負責課前、課後提醒與筆記回覆；目前可先跳過正式綁定。",
-        "先建立一項任務與一個可用時段，Scheduler 才能安排有意義的計畫。",
-        "將課程與讀書計畫匯出成 .ics，再用 Google 或 Apple Calendar 開啟。",
+    """每次只提出一個具體目標；說明資料是如何經 LINE、AI、Scheduler 流動。"""
+    step = min(max(int(st.session_state.get("cp_setup_step", 0)), 0), 4)
+    titles = (
+        "先認識 ClassPulse",
+        "建立你的每週課表",
+        "了解 LINE 與 AI 的角色",
+        "加入任務與可以讀書的時間",
+        "將安排帶到手機，完成設定",
     )
-    step = min(max(step, 0), 4)
-    hero(f"初次設定 · {step + 1} / 5", headings[step], descriptions[step])
+    intros = (
+        "這不是另一個要每天填寫的行事曆。網站管理計畫；LINE 接收筆記；AI 整理建議；最後由排程規則決定時間。",
+        "先讓系統知道哪些時段有固定課程。這會在後續排程時保留你的上課時間。",
+        "課後從 LINE 回覆理解度與筆記，AI 才能提出複習方向；你確認後，建議才會變成任務。",
+        "排程需要兩種資訊：你想完成什麼、何時有空。完成後，可到視覺化時間表拖曳並調整長度。",
+        "你可以把已排好的計畫匯出到 Google／Apple Calendar；也可以先跳過，之後再來下載。",
+    )
+    hero(f"SETUP · 步驟 {step+1}/5", titles[step], intros[step])
     st.progress((step + 1) / 5)
-    st.write("")
+    st.caption("每一步都可跳過。不必先準備 LINE Token、AI API Key，或一次填完所有資料。")
+
     if step == 0:
-        with st.container(border=True):
-            st.markdown("#### 三個角色，只有一條流程")
-            st.write("**LINE** 蒐集課後回饋。**AI** 提出複習建議。"
-                     "**ClassPulse** 負責審核、排程和資料管理。")
-            st.caption("你可以先體驗右側導航的 LINE 一日展示，稍後再完成設定。")
+        st.subheader("整個使用流程")
+        a, b, c = st.columns(3)
+        with a:
+            with st.container(border=True):
+                st.markdown("**1. 設定**")
+                st.write("填入每週課表、待辦任務與可用時段。")
+                st.caption("使用網站控制台")
+        with b:
+            with st.container(border=True):
+                st.markdown("**2. 課後回饋**")
+                st.write("LINE 收集筆記，AI 提出複習建議；你決定是否接受。")
+                st.caption("正式串接前可先看模擬")
+        with c:
+            with st.container(border=True):
+                st.markdown("**3. 規劃與回顧**")
+                st.write("Scheduler 避開固定課程；時間表可手動拖曳，完成後生成統計。")
+                st.caption("結果可匯出至手機行事曆")
+        st.info("如果只是期末展示：先開左側「展示模式」，即可使用獨立的虛構課表及 LINE 一日展示。"
+                "它不會發出真實 LINE 訊息，也不會修改正式資料。")
+        st.caption(f"目前執行版本：{version['branch']} · {version['sha']}。如果看不到新 Timesheet，"
+                   "請先檢查是否從舊的 localhost:8501 開啟。")
+
     elif step == 1:
+        st.markdown("#### 現在請做：新增一門固定課程")
+        st.write("例如「週三 13:00–15:00 控制系統」。系統會在時間表上用固定方塊顯示它，"
+                 "自動排程會避開與課程重疊的可用時段。")
         screenshot_preview("onboarding")
-        with st.expander("新增課程", expanded=not bool(own(data["events"]))):
+        st.caption("課表截圖目前只能預覽，不會自動讀圖建立課程。請使用下方表單手動確認。")
+        with st.expander("＋ 新增一門課程", expanded=not bool(own(data["events"]))):
             add_course_form("setup")
-        st.caption(f"目前有 {len(own(data['events']))} 門課程。")
+        count = len(own(data["events"]))
+        if count:
+            st.success(f"已建立 {count} 門課程。可以繼續，日後在「時間規劃」點擊課程修改。")
+        else:
+            st.info("還沒有建立課程。如果暫時沒有課表，可以直接下一步，稍後補充。")
+
     elif step == 2:
-        with st.container(border=True):
-            st.markdown("#### LINE 串接")
-            st.write("在 LINE 官方帳號輸入「綁定 <綁定碼>」；正式模式需要"
-                     " LINE Channel 與公開 HTTPS Webhook。")
-            st.info("若尚未建立 LINE Bot，可以跳過。展示頁提供全程三選一虛擬對話。")
-            if st.button("先觀看 LINE 一日展示"):
-                go_to("LINE 一日展示")
+        st.markdown("#### 這一步的資料如何流動？")
+        st.write("**LINE 課後訊息 → 你回報筆記與理解度 → AI 分析 → 你確認建議 → 讀書任務**")
+        st.write("AI 只提出待辦與複習方向，不會直接代替你決定讀書時間；"
+                 "時間仍由 Scheduler 按期限與可用時段排入。")
+        if demo_mode:
+            st.success("目前為展示模式：可直接體驗三選一的虛擬 LINE 對話與 Mock AI。")
+        elif settings.get("line_user_id"):
+            st.success("此資料中已有 LINE 綁定資訊。正式訊息能否送達仍要驗證 Webhook 與服務運作。")
+        else:
+            st.info("尚未連接 LINE，並不影響其他功能。真正連接需要 LINE 官方帳號、"
+                    "公開 HTTPS Webhook 與綁定碼；不必把 Token 填在展示畫面。")
+        if st.button("先體驗 08:00–21:00 LINE 一日展示", key="cp_setup_line_demo"):
+            go_to("LINE 一日展示")
+        st.caption("這裡的模擬只展示對話情境；真實 LINE 推播須另行啟動 Bot／提醒 Worker。")
+
     elif step == 3:
-        with st.expander("建立第一項任務", expanded=not bool(own(data["tasks"]))):
+        st.markdown("#### 現在請做：建立一個任務，再告訴系統何時有空")
+        st.write("例如「完成回授穩定度練習，60 分鐘，週五前完成」，"
+                 "再新增「週四 19:00–20:30 可讀書」。")
+        with st.expander("① 建立讀書任務", expanded=not bool(own(data["tasks"]))):
             add_task_form("setup")
-        with st.expander("設定第一個可用時段", expanded=not bool(own(data["availability"]))):
+        with st.expander("② 新增可用讀書時段", expanded=not bool(own(data["availability"]))):
             add_slot_form("setup")
-        st.caption(f"已建立 {len(own(data['tasks']))} 項任務、"
-                   f"{len(own(data['availability']))} 個可用時段。")
+        task_count = len(own(data["tasks"]))
+        slot_count = len(own(data["availability"]))
+        st.caption(f"目前任務 {task_count} 項、可用時段 {slot_count} 個。")
+        if task_count and slot_count:
+            st.success("已有任務和可用時間。完成設定後到「時間規劃」拖動任務方塊，"
+                       "或使用「重新安排其他任務」。")
+        else:
+            st.info("至少一項任務與一段可用時間，才能看到有意義的自動排程結果。"
+                    "但現在仍可以跳過。")
+        st.caption("紅色課程不可直接移動；手動安排若與課程重疊，會要求你確認請假／翹課／停課的原因。")
+
     elif step == 4:
+        st.markdown("#### 最後：把已規劃的時間帶到手機")
+        st.write("ClassPulse 是任務與時間的管理來源；Google／Apple Calendar 可以用來在手機查看。")
         ics = export_calendar_ics(own(data["events"]), own(data["tasks"]),
                                   own(data["availability"]), own(data["plan"]), today)
-        st.download_button("下載 ClassPulse 行事曆（.ics）", ics,
-                           file_name="classpulse_schedule.ics", mime="text/calendar")
-        st.caption("匯出是單向的；後續修改任務需重新匯出，不是即時同步。")
-    a, b = st.columns([1, 1])
-    with a:
-        if step > 0 and st.button("上一步", use_container_width=True):
+        st.download_button("下載我的行事曆（.ics）", ics,
+                           file_name="classpulse_schedule.ics", mime="text/calendar",
+                           type="primary")
+        scheduled = sum(p.get("status") == "scheduled" for p in own(data["plan"]))
+        if scheduled:
+            st.success(f"目前有 {scheduled} 個已安排讀書時段可匯出。")
+        else:
+            st.info("目前沒有已安排的讀書任務。可以先完成設定，再回「時間規劃」安排後重新匯出。")
+        st.caption("提醒：.ics 是一次性快照，不會自動同步。之後修改時間，須重新匯入更新。")
+
+    st.divider()
+    previous, forward = st.columns(2)
+    with previous:
+        if step > 0 and st.button("上一步", key="cp_setup_previous",
+                                 use_container_width=True):
             st.session_state["cp_setup_step"] = step - 1
             st.rerun()
-    with b:
-        if step == 4:
-            if st.button("完成設定，進入控制台", type="primary", use_container_width=True):
-                def finish():
-                    persist_user({"onboarding_complete": True})
-                    st.session_state["cp_next_nav"] = "總覽"
-                saved(finish, "已完成初次設定")
-        elif st.button("下一步（也可以略過）", type="primary",
-                       use_container_width=True):
-            st.session_state["cp_setup_step"] = step + 1
-            st.rerun()
-    if st.button("跳過全部步驟，直接進入控制台"):
+    with forward:
+        if step < 4:
+            if st.button("繼續下一步", type="primary", key="cp_setup_continue",
+                         use_container_width=True):
+                st.session_state["cp_setup_step"] = step + 1
+                st.rerun()
+        elif st.button("完成並進入 Dashboard", type="primary",
+                       key="cp_setup_finish", use_container_width=True):
+            def finish():
+                persist_user({"onboarding_complete": True})
+                st.session_state["cp_next_nav"] = "總覽"
+            saved(finish, "初次設定已完成")
+    if st.button("略過剩餘設定，直接進入 Dashboard", key="cp_setup_skip"):
         def skip():
             persist_user({"onboarding_complete": True})
             st.session_state["cp_next_nav"] = "總覽"
-        saved(skip, "已進入控制台")
+        saved(skip, "已進入 Dashboard；稍後可以回到「首次設定」補齊")
+
 
 
 def render_overview() -> None:
