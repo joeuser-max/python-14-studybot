@@ -14,8 +14,20 @@ NOW = datetime(2026, 11, 26, 22, 0, tzinfo=TZ)
 
 def test_sample_fixture_is_valid_and_editable():
     records = sample_records(NOW)
-    assert len(records["events"]) >= 3
-    assert len(records["tasks"]) >= 2
+    assert len(records["events"]) == 14
+    assert len(records["tasks"]) >= 12
+    assert len([t for t in records["tasks"] if t["status"] == "completed"]) >= 8
+    assert len(records["progress_events"]) >= 8
+    # 螢幕截圖中的課表以固定週次與時間儲存，僅用於展示模式。
+    selected = {(c["title"], c["weekday"], c["start_time"], c["end_time"])
+                for c in records["events"]}
+    assert ("電子學 III", 1, "09:00", "11:50") in selected
+    assert ("程式設計-Python", 1, "18:00", "20:50") in selected
+    assert ("控制系統", 3, "13:00", "13:50") in selected
+    assert ("先進記憶體元件物理與製造技術", 4, "14:00", "16:50") in selected
+    assert ("專題實作", 6, "13:00", "15:50") in selected
+    assert any(t.get("source") == "ai_confirmed"
+               for t in records["tasks"] if t["status"] == "pending")
     assert records["users"][0]["line_user_id"] == ""
     assert records["feedback"][0]["source"] == "demo"
     for event in records["events"]:
@@ -38,7 +50,7 @@ def test_demo_storage_does_not_modify_live_files(monkeypatch, tmp_path):
         storage.select_demo_storage(True)
         assert seed_demo_data(now=NOW) is True
         original = storage.load_json(storage.data_path("events"))
-        assert len(original) == 3
+        assert len(original) == 14
 
         # 修改展示課程後重新整理，不應重新載入覆蓋。
         edited = {**original[0], "title": "現場修改的課程"}
