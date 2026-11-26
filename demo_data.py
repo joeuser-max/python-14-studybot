@@ -50,7 +50,9 @@ def sample_records(now: datetime | None = None) -> dict[str, list]:
          "date": (today + timedelta(days=index)).isoformat(),
          "start_time": start, "available_minutes": minutes}
         for index, start, minutes in (
-            (1, "19:00", 90), (2, "19:00", 60), (3, "20:00", 120)
+            (1, "19:00", 90), (2, "19:00", 60), (3, "20:00", 120),
+            (4, "21:00", 90), (5, "19:00", 90),
+            (6, "19:00", 60), (7, "19:00", 90),
         )
     ]
     tasks = [
