@@ -10,6 +10,7 @@ from ai_assistant import AIError, ai_is_configured, analyze_learning_records
 from calendar_export import export_calendar_ics, google_calendar_url, task_calendar_event
 from day_demo import SCENES, advance, new_day_state, respond, visible_messages
 from demo_data import mock_learning_suggestions, seed_demo_data
+from task_actions import save_task_changes, delete_task_and_plan
 from exporter import export_learning_markdown
 from plan_bridge import merge_user_plan, normalize_plan_result
 from storage import (
@@ -258,18 +259,19 @@ def task_dialog(task: dict) -> None:
                       "progress_percent": final_percent,
                       "status": "completed" if final_percent == 100 else "pending"}
             def save_task():
-                update_task(edited)
-                clear_plan()
+                save_task_changes(
+                    edited, demo_mode=bool(st.session_state.get("classpulse_demo_mode", False))
+                )
             saved(save_task, "任務已更新")
         if delete_click:
             if not confirm_delete:
                 st.warning("請先勾選刪除確認。")
             else:
                 def delete_task():
-                    update_json(data_path("tasks"),
-                                lambda rows: [r for r in rows
-                                              if r.get("task_id") != task["task_id"]])
-                    clear_plan()
+                    delete_task_and_plan(
+                        task["task_id"], USER_ID,
+                        demo_mode=bool(st.session_state.get("classpulse_demo_mode", False)),
+                    )
                 saved(delete_task, "任務已刪除")
 
 
