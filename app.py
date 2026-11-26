@@ -86,8 +86,18 @@ def persist_user(values: dict) -> None:
     update_json(data_path("users"), update)
 
 
+def sync_storage_context() -> None:
+    """Streamlit dialog fragments may rerun without the sidebar/top-level setup.
+
+    ContextVar is scoped to the executing context, so restore the data directory
+    from this session's demo switch BEFORE any dialog read or write.
+    """
+    select_demo_storage(bool(st.session_state.get("classpulse_demo_mode", False)))
+
+
 def saved(action, message: str) -> None:
     try:
+        sync_storage_context()
         action()
     except (DataError, ValueError, OSError) as exc:
         st.error(str(exc))
@@ -138,6 +148,11 @@ with st.sidebar:
     if not onboarding_done and st.button("跳過初次設定", use_container_width=True):
         saved(lambda: persist_user({"onboarding_complete": True}), "已進入控制台")
     st.caption("LINE 一日展示皆為可重播的情境，不連接真實 LINE。")
+    with st.expander("Donate · Just for fun", expanded=False):
+        st.caption("支持 ClassPulse 的趣味彩蛋 · 非金流服務")
+        st.write("**銀行代碼：822**")
+        st.code("417540472590", language=None)
+        st.caption("僅顯示資訊；網站不會收款、驗證匯款或記錄捐款。")
 
 
 def hero(kicker: str, heading: str, intro: str) -> None:
@@ -218,6 +233,7 @@ def add_slot_form(prefix: str) -> None:
 
 @st.dialog("修改任務")
 def task_dialog(task: dict) -> None:
+    sync_storage_context()
     st.caption(f"{task['subject']} · 點選後直接編輯，不需要另外找選單。")
     with st.form(f"cp_edit_task_{task['task_id']}"):
         title = st.text_input("任務名稱", value=task["title"])
@@ -259,6 +275,7 @@ def task_dialog(task: dict) -> None:
 
 @st.dialog("修改讀書時段")
 def slot_dialog(slot: dict) -> None:
+    sync_storage_context()
     with st.form(f"cp_edit_slot_{slot['availability_id']}"):
         day = st.date_input("日期", value=date.fromisoformat(slot["date"]))
         a, b = st.columns(2)
@@ -292,6 +309,7 @@ def slot_dialog(slot: dict) -> None:
 
 @st.dialog("修改課程")
 def course_dialog(course: dict) -> None:
+    sync_storage_context()
     with st.form(f"cp_edit_course_{course['event_id']}"):
         title = st.text_input("課程名稱", value=course["title"])
         weekday = st.selectbox(
@@ -566,7 +584,8 @@ def render_feedback() -> None:
                     st.caption(f"當次自評理解度：{note['progress']} / 5")
                 analysis = note.get("ai_analysis")
                 if isinstance(analysis, dict) and analysis.get("summary"):
-                    st.info("AI 整理：" + str(analysis["summary"]))
+                    label = "【預載展示／Mock】" if demo_mode else "AI 整理："
+                    st.info(label + str(analysis["summary"]))
                 if index < len(notes) - 1:
                     st.divider()
             st.caption("此項目為視覺彙整；原始 feedback_id 及筆記仍分別保存。")
