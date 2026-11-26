@@ -4,68 +4,100 @@ ClassPulse 將課後筆記、AI 建議、讀書任務和時間安排連成一條
 
 這是第 14 組 Python 課程的可執行 MVP，不是正式上線的多人 SaaS。
 
-## 快速啟動網站
+## 正確啟動網頁：始終使用最新已合併的 main
 
-**先確認 Terminal 位於專案目錄！** 如果畫面顯示 `~ %`，代表你在 Mac 使用者主目錄，直接輸入 `pip install -r requirements.txt` 會找不到檔案。只有 `cd` 到包含 `app.py`、`requirements.txt` 的專案資料夾，才能正確啟動。
+**版本與網址是兩回事。** GitHub 的 main 才是已合併的正式版本；功能分支／PR 尚未合併的版本不會自動出現在 main。本機 Streamlit 也不會因為 GitHub 更新而自行同步。**舊的 localhost:8501 可能還有舊程序在執行，因此我們統一使用 http://localhost:8502。**
 
-### macOS：第一次下載與啟動（推薦）
+新版啟動器會先執行 GitHub main 的安全更新（git fetch → git switch main → git pull --ff-only），再檢查 Python、安裝套件、顯示「分支及 Commit」，最後在固定的 8502 Port 開啟。遇到網路失敗、無法安全更新或 Port 已占用就會停下來，**不會偷偷改成別的 Port、強制刪除本機修改或啟動舊版**。
 
-開啟 Terminal，整段貼上：
+### macOS：第一次安裝（整段複製）
 
-```bash
+在 Terminal 貼上：
+
+~~~bash
 git clone https://github.com/joeuser-max/python-14-studybot.git ~/ClassPulse-Demo
 bash ~/ClassPulse-Demo/start_mac.sh
-```
+~~~
 
-`start_mac.sh` 會自動切換到專案根目錄、建立專案專用 `.venv`、必要時安裝套件，然後啟動 Streamlit。Mac 瀏覽器開啟 **http://localhost:8501**。不用預先安裝 LINE 或 OpenAI 憑證就可以體驗展示模式。
+如果顯示「destination path already exists」，不用再次 Clone。用下面的已安裝流程。
 
-**以後再次開啟：**只需執行 `bash ~/ClassPulse-Demo/start_mac.sh`；如果要取得新版本，先 `cd ~/ClassPulse-Demo && git pull --ff-only`。停止網站按 `Control + C`。
+### macOS：已經有資料夾，以後這樣開（整段複製）
 
-如果顯示 `fatal: destination path ... already exists`，代表已下載過，直接執行上面「再次開啟」的指令即可。如果你已經將專案放在另一個資料夾，也可以從 Finder 將該資料夾拖曳到 Terminal 的 `cd ` 後面，或先 `pwd` 和 `ls` 確認資料夾位置。
-
-### macOS／Linux：手動啟動
-
-```bash
-# 先到你已經 Clone 的專案根目錄
+~~~bash
 cd ~/ClassPulse-Demo
-ls app.py requirements.txt
-python3 -m venv .venv
-source .venv/bin/activate
-python -m pip install -r requirements.txt
-python -m streamlit run app.py
-```
+git fetch origin main
+git switch main
+git pull --ff-only origin main
+bash ./start_mac.sh
+~~~
 
-### Windows PowerShell
+如果專案不在 ~/ClassPulse-Demo，先開 Finder，將專案資料夾拖到 Terminal 的 cd 後面，再執行後三行。新版啟動器日後會自動更新 main；上面額外的 Git 步驟是為了讓舊版啟動器也確實升級。
 
-```powershell
-git clone https://github.com/joeuser-max/python-14-studybot.git
-cd python-14-studybot
-py -m venv .venv
-.venv\Scripts\Activate.ps1
-python -m pip install -r requirements.txt
-python -m streamlit run app.py
-```
+### Windows PowerShell：第一次使用或已安裝皆可（整段複製）
 
-### 常見錯誤
+~~~powershell
+$project = Join-Path $HOME "ClassPulse-Demo"
+if (-not (Test-Path (Join-Path $project ".git"))) {
+    if (Test-Path $project) { throw "資料夾已存在但不是 Git 專案；請先檢查位置" }
+    git clone https://github.com/joeuser-max/python-14-studybot.git $project
+    if ($LASTEXITCODE -ne 0) { throw "Git Clone 失敗" }
+}
+Set-Location $project
+git fetch origin main
+if ($LASTEXITCODE -ne 0) { throw "Git fetch 失敗" }
+git switch main
+if ($LASTEXITCODE -ne 0) { throw "無法安全切換 main" }
+git pull --ff-only origin main
+if ($LASTEXITCODE -ne 0) { throw "無法安全更新 main" }
+powershell -NoProfile -ExecutionPolicy Bypass -File .\start_windows.ps1
+~~~
 
-| 錯誤訊息 | 原因與修復 |
+之後可以直接執行最後一行，新版 Windows 啟動器會自行更新主線，使用專案內的 .venv\Scripts\python.exe，不需要 Activate.ps1。
+
+### 我如何確認不是舊版本？
+
+啟動後的 Terminal／PowerShell 應同時顯示以下三個資訊：
+
+- **ClassPulse：main / [Git Commit 短碼]**
+- **專案資料夾：...**（實際執行的原始碼目錄）
+- **網站網址：http://localhost:8502**
+
+在網頁左側 ClassPulse 標題下，會再顯示「目前程式：main · [相同短碼]」。展開「查看執行目錄及版本」，檢查是不是同一個資料夾。**短碼會隨每次新的合併而改變，請勿把以前的 SHA 當成永久正確版本。**
+
+需要查本機狀態可以用：
+
+~~~bash
+git branch --show-current
+git rev-parse --short HEAD
+git rev-parse --show-toplevel
+~~~
+
+### 常見情況
+
+| 現象 | 正確處理 |
 | --- | --- |
-| `No such file or directory: requirements.txt` | 沒有進入專案根目錄。先 `pwd`、`ls`，再 `cd ~/ClassPulse-Demo`。 |
-| `No module named streamlit` | 安裝先前失敗或用錯 Python 環境。執行 `source .venv/bin/activate`、`python -m pip install -r requirements.txt`。 |
-| `cd: no such file or directory: python-14-studybot` | 專案尚未 Clone，或已在專案內。用 `pwd` 確認後再 Clone。 |
-| 網址打不開 | 確認 Streamlit 的 Terminal 視窗仍在執行；`localhost` 只能在啟動網站的同一台電腦開啟。 |
+| 開到舊介面或原本的四個水平 Tab | 你可能開了舊的 localhost:8501；請關閉舊 Terminal 程序（Control/Ctrl + C），改用 8502 和新版啟動器 |
+| requirements.txt 找不到 | 目前不在專案根目錄；啟動器會自行切換目錄。用 git rev-parse --show-toplevel 檢查 |
+| No module named streamlit | 先讓啟動器完成安裝步驟，不要只執行 python -m streamlit run app.py |
+| Port 8502 已被使用 | 先關閉原先啟動 8502 的 Terminal，然後重跑啟動器；不要開另一個 Port 猜版本 |
+| 無法切換分支／拉取更新 | 請先 git status 檢查是否有本機修改；不會自動 git reset --hard 或刪除工作 |
+| 網頁版本正確但展示資料還是舊的 | 既有 .classpulse-demo-data 是持久資料。若想還原最新示範內容，可在側欄按「還原展示資料」；**會覆寫展示期間的修改** |
 
-需要 **Python 3.11 以上**。如果下載後已有本機修改，先不要強制 `git pull` 或覆蓋檔案。
+需要 Git 與 Python 3.11 以上版本。localhost 網址只能從啟動網站的電腦直接存取；沒有自動上線成公共網址。
 
-## 使用者流程
+## 網頁首次使用：從設定到完成一天
 
-1. **首次引導**：認識產品 → 新增課程／課表截圖預覽 → LINE 說明 → 新增任務與可用時段 → 外部行事曆。每一步可略過，完成後才出現全部側欄。
-2. **總覽**：顯示待辦、課程數及已排入任務。避免一次展示所有表單。
-3. **我的任務**：直接點擊卡片編輯名稱、期限、預估時間、0–100% 進度或完成勾選，也可刪除。
-4. **時間規劃**：點課程或可用時段卡片直接修改。Scheduler 依 Deadline、時段容量及衝突規則排程。
-5. **學習回饋**：相同 (課程 ID, 課程日期) 的多則筆記合併顯示；原始筆記與 ID 保留。
-6. **AI 助理**：只有在使用者明確同意後才嘗試呼叫 OpenAI；AI 建議需要再次確認才寫入任務。
-7. **連接與匯出**：調整 LINE 提醒偏好，下載 .ics 和 Markdown，或為單一任務開啟 Google Calendar 新增事件畫面。
+第一次開網站會看到 **5 個逐步引導**；每一步只要做當前那件事，就可以往下一步。沒有課表、還沒接 LINE 或 AI，都能跳過：
+
+1. **先認識流程**：網站負責設定／控制、LINE 負責課後筆記、AI 負責提建議、Scheduler 依規則排時間。想試用範例，先切換側欄「展示模式」。
+2. **新增課程**：在表單輸入課名、星期、上課時間。上傳截圖目前只會顯示圖片，**不會自動辨識**；已新增課程稍後可從「時間規劃」修改。
+3. **了解 LINE／AI**：按「LINE 一日展示」可看固定三選一互動。真正連接 LINE 需部署 Bot 和 Webhook；AI 建議須由本人確認後才建立任務。
+4. **建立任務與可用時間**：至少新增一項待辦與一個空檔。完成設定後到「時間規劃」的 Timesheet，可將待排方塊拖入日／週時間格、拉長或縮短，確認才儲存。
+5. **行事曆匯出**：按下載 .ics，將目前的已排時段帶到 Google／Apple Calendar。這只是一次性匯入，之後在網站修改時不會自動同步。
+
+完成後，側欄可以看到「總覽／我的任務／時間規劃／學習回饋／AI 助理／連接與匯出／LINE 一日展示／首次設定」。首頁能看待辦及日週月完成曲線；點任務卡片可直接改名、調整完成百分比或刪除。所有設定均可在日後繼續編輯。
+
+**要確認自己的版本：**看側欄「目前程式：main · Commit 短碼」。舊版若沒有這項資訊，應先確認是否開錯 localhost Port 或還沒更新程式。
 
 ## 附加展示：LINE 從 08:00 到 21:00 的一天
 

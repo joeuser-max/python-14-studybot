@@ -33,3 +33,21 @@ jobs:
           done
           cat /tmp/classpulse-streamlit.log
           exit 1
+
+  windows-launcher-parse:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: 檢查 Windows PowerShell 快速啟動器語法
+        shell: pwsh
+        run: |
+          $tokens = $null
+          $errors = $null
+          $path = (Resolve-Path '.\start_windows.ps1').Path
+          [System.Management.Automation.Language.Parser]::ParseFile(
+            $path, [ref]$tokens, [ref]$errors
+          ) | Out-Null
+          if ($errors.Count -gt 0) {
+            $errors | ForEach-Object { Write-Error $_.Message }
+            exit 1
+          }
