@@ -9,12 +9,13 @@ from streamlit_calendar import calendar
 
 from ai_assistant import AIError, ai_is_configured, analyze_learning_records
 from calendar_events import build_calendar_events
+from demo_data import mock_learning_suggestions, seed_demo_data
 from exporter import export_learning_markdown
 from storage import (
     DataError, TZ, add_availabilities, add_event, add_task_to_storage,
     clear_task_availability_preference, create_id, data_path,
     delete_availability, load_json, update_availability, update_event,
-    update_json, update_task,
+    update_json, update_task, save_feedback, select_demo_storage,
 )
 from tracker import calculate_response_rate, calculate_task_progress
 from plan_bridge import merge_user_plan, normalize_plan_result
@@ -25,7 +26,17 @@ CALENDAR_KEY = "classpulse_schedule_calendar"
 
 st.set_page_config(page_title="ClassPulse", page_icon="📚", layout="wide")
 st.title("ClassPulse")
-st.caption("主動式學習回饋與規劃助手｜蕭博軒負責：介面、JSON、統計、Markdown、AI 分析")
+st.caption("主動式學習回饋與規劃助手")
+demo_mode = st.toggle("展示模式（使用獨立的範例資料）", key="classpulse_demo_mode", value=False)
+select_demo_storage(demo_mode)
+if demo_mode:
+    seed_demo_data()
+    st.info("目前為展示模式：課表、LINE 回覆和 AI 建議均為模擬；資料只寫到展示資料夾，不會發送 LINE 或呼叫外部 AI。")
+    if st.button("重設展示資料", help="還原預設課程、任務、範例筆記與提醒設定"):
+        seed_demo_data(reset=True)
+        st.session_state.pop("demo_ai_result", None)
+        st.rerun()
+
 
 
 def read_all() -> dict:
@@ -109,6 +120,16 @@ with pages[0]:
     st.divider()
 
     st.subheader("設定每週課表")
+    with st.expander("上傳課表截圖（預覽展示）", expanded=demo_mode):
+        st.caption("可上傳 PNG、JPG 或 WebP 課表圖；目前僅顯示預覽，不會自動 OCR 辨識、建立課程或傳到 AI API。")
+        uploaded_schedule = st.file_uploader(
+            "選擇課表截圖", type=["png", "jpg", "jpeg", "webp"],
+            key="classpulse_schedule_image",
+        )
+        if uploaded_schedule is not None:
+            st.image(uploaded_schedule, caption=f"課表截圖預覽：{uploaded_schedule.name}",
+                     use_container_width=True)
+            st.caption("如需轉為可編輯課程，請使用下方「新增課程」；之後可擴充圖片辨識流程。")
     with st.form("add_class", clear_on_submit=True):
         name = st.text_input("課程名稱", placeholder="例如：控制系統")
         weekday = st.selectbox("星期", list(WEEKDAYS), format_func=lambda v: WEEKDAYS[v])
@@ -212,7 +233,9 @@ with pages[0]:
     st.subheader("LINE 提醒設定")
     users = own(records["users"])
     current_user = users[0] if users else {"user_id": USER_ID}
-    if current_user.get("line_user_id"):
+    if demo_mode:
+        st.info("展示模式：下方開關與訊息都只用於模擬，不代表 LINE 帳號已綁定或真的收到推播。")
+    elif current_user.get("line_user_id"):
         st.success("LINE 帳號已綁定")
     else:
         st.info("尚未綁定 LINE。請依 README 設定綁定碼，並在 LINE 輸入「綁定 <綁定碼>」。")
@@ -231,16 +254,20 @@ with pages[0]:
             value=current_user.get("ai_after_class_enabled") is True,
             key="ai_after_class_enabled",
             disabled=(
-                not ai_configured
+                not demo_mode
+                and not ai_configured
                 and current_user.get("ai_after_class_enabled") is not True
             ),
         )
-        st.caption(
-            "啟用後，課程名稱、你輸入的筆記與 1–5 自評進度會傳送至 OpenAI；"
-            "AI 建議的任務仍須由你在 LINE 確認才會新增。OpenAI API 可能依帳戶方案計費。"
-        )
-        if not ai_configured:
-            st.caption("設定 OPENAI_API_KEY 與 OPENAI_MODEL 後，才能啟用課後 AI 整理。")
+        if demo_mode:
+            st.caption("展示模式不會呼叫 LINE 或 OpenAI；此處僅模擬提醒及 AI 同意設定。")
+        else:
+            st.caption(
+                "啟用後，課程名稱、你輸入的筆記與 1–5 自評進度會傳送至 OpenAI；"
+                "AI 建議的任務仍須由你在 LINE 確認才會新增。OpenAI API 可能依帳戶方案計費。"
+            )
+            if not ai_configured:
+                st.caption("設定 OPENAI_API_KEY 與 OPENAI_MODEL 後，才能啟用課後 AI 整理。")
         if st.form_submit_button("儲存提醒設定"):
             def save_reminder_settings():
                 user = {
@@ -257,6 +284,42 @@ with pages[0]:
                     ] + [user],
                 )
             safely(save_reminder_settings, "提醒設定已儲存")
+
+    if demo_mode:
+        with st.expander("模擬 LINE 課後提醒與補筆記", expanded=True):
+            st.caption("以下訊息僅為網頁展示，不會送到 LINE，也不需要 Webhook／API Key。")
+            if courses:
+                demo_course_by_id = {c["event_id"]: c for c in courses}
+                demo_selected_id = st.selectbox(
+                    "示範課程", list(demo_course_by_id),
+                    format_func=lambda eid: demo_course_by_id[eid]["title"],
+                    key="demo_line_selected_course",
+                )
+                demo_course = demo_course_by_id[demo_selected_id]
+                st.info(f"【LINE 模擬通知】「{demo_course['title']}」下課後，請回報理解進度並記錄筆記。")
+                with st.form("demo_line_feedback_form", clear_on_submit=False):
+                    demo_progress = st.slider("模擬理解進度", 1, 5, 3)
+                    demo_note = st.text_area(
+                        "模擬 LINE 回覆的課堂筆記",
+                        value="今天學到一個新概念，但還有部分題目需要複習。",
+                        key="demo_line_note",
+                    )
+                    if st.form_submit_button("模擬回覆並存入展示資料"):
+                        demo_feedback = {
+                            "feedback_id": create_id("feedback"),
+                            "user_id": USER_ID,
+                            "event_id": demo_selected_id,
+                            "class_date": datetime.now(TZ).date().isoformat(),
+                            "reminder_id": "",
+                            "received_at": datetime.now(TZ).isoformat(timespec="seconds"),
+                            "content": demo_note.strip(),
+                            "progress": int(demo_progress),
+                            "source": "demo",
+                            "webhook_event_id": create_id("demo_webhook"),
+                        }
+                        safely(lambda: save_feedback(demo_feedback), "模擬回覆已儲存到展示資料（未傳送 LINE）")
+            else:
+                st.info("請先在展示模式新增課程，才能預覽 LINE 課後提醒。")
 
     st.subheader("新增可用讀書時段")
     now = datetime.now(TZ)
@@ -633,16 +696,27 @@ with pages[3]:
         st.code(markdown, language="markdown")
 
     st.subheader("AI：將課後疑問轉成待確認的複習任務")
-    st.caption("以 OpenAI API 分析已蒐集的筆記。無金鑰時仍可下載 Markdown；API 失敗不修改任務。")
-    consent = st.checkbox("我已檢查待傳送的資料，並同意本次將內容送往外部 AI API 分析")
-    if st.button("分析學習紀錄", disabled=not consent):
-        try:
-            with st.spinner("分析中"):
-                st.session_state["ai_result"] = analyze_learning_records(own(records["feedback"]), USER_ID, markdown)
-            st.success("已產生 AI 建議；不會自動修改排程。")
-        except AIError as exc:
-            st.error(str(exc))
-    result = st.session_state.get("ai_result")
+    ai_result_key = "demo_ai_result" if demo_mode else "ai_result"
+    if demo_mode:
+        st.caption("展示模式使用標示為 Mock 的固定範例回應，不會呼叫 OpenAI；仍需使用者確認才能新增任務。")
+        if st.button("展示 AI 建議（Mock，不呼叫 API）"):
+            st.session_state[ai_result_key] = mock_learning_suggestions(
+                own(records["feedback"]), own(records["events"]), USER_ID
+            )
+            st.success("已產生 Mock 展示結果，未呼叫外部 AI。")
+    else:
+        st.caption("以 OpenAI API 分析已蒐集的筆記。無金鑰時仍可下載 Markdown；API 失敗不修改任務。")
+        consent = st.checkbox("我已檢查待傳送的資料，並同意本次將內容送往外部 AI API 分析")
+        if st.button("分析學習紀錄", disabled=not consent):
+            try:
+                with st.spinner("分析中"):
+                    st.session_state[ai_result_key] = analyze_learning_records(
+                        own(records["feedback"]), USER_ID, markdown
+                    )
+                st.success("已產生 AI 建議；不會自動修改排程。")
+            except AIError as exc:
+                st.error(str(exc))
+    result = st.session_state.get(ai_result_key)
     if result:
         st.write(result.get("summary", ""))
         suggestions = result.get("suggestions", [])
