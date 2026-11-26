@@ -77,12 +77,10 @@ def propose_placement(tasks: list[dict], slots: list[dict], plan: list[dict],
     if end.date() != start.date() and end != datetime.combine(
             start.date() + timedelta(days=1), time.min, TZ):
         raise storage.DataError("目前不支援跨午夜的讀書方塊")
-    if end.date() > date.fromisoformat(target["deadline"]):
-        # 截止當日 24:00 仍允許
-        deadline_end = datetime.combine(date.fromisoformat(target["deadline"]) +
-                                        timedelta(days=1), time.min, TZ)
-        if end > deadline_end:
-            raise storage.DataError("讀書時段不能晚於任務 Deadline")
+    deadline_end = datetime.combine(date.fromisoformat(target["deadline"]),
+                                    time(23, 59), TZ)
+    if end > deadline_end:
+        raise storage.DataError("讀書時段不能晚於任務 Deadline")
     task_by_id = {t["task_id"]: t for t in tasks if t.get("user_id") == user_id}
     slot_by_id = {s["availability_id"]: s for s in slots if s.get("user_id") == user_id}
     for row in plan:
@@ -167,6 +165,20 @@ def place_task(user_id: str, task_id: str, start: str | datetime, end: str | dat
     task = next(t for t in tasks if t["task_id"] == task_id and t["user_id"] == user_id)
     updated_task = {**task, "preferred_availability_id": slot_id,
                     "planning_hold": False, "estimated_minutes": proposal["minutes"]}
+    # 先在記憶體中試排一次，避免因排程失敗才發現資料已經寫入。
+    proposed_slots = [row for row in slots if row.get("availability_id") != slot_id] + [slot]
+    proposed_tasks = [updated_task if row.get("task_id") == task_id
+                      and row.get("user_id") == user_id else row for row in tasks]
+    eligible_tasks = [row for row in proposed_tasks
+                      if row.get("user_id") == user_id and not row.get("planning_hold")]
+    dry_run = make_plan(
+        eligible_tasks, _eligible_availability(proposed_slots, courses, user_id),
+        [row for row in plan if row.get("user_id") == user_id], now,
+    )
+    planned = next((row for row in dry_run["plan"] if row.get("task_id") == task_id), {})
+    if planned.get("status") != "scheduled":
+        raise storage.DataError(f"不能完成這次手動安排：{planned.get('reason', '沒有合法時段')}")
+
     # JSON 檔案的讀改寫各自上鎖；跨檔案交易非原子，正式多使用者環境應改 DB。
     storage.update_json(storage.data_path("availability"),
                         lambda rows: [r for r in rows
