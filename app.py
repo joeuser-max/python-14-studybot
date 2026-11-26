@@ -396,6 +396,27 @@ def go_to(target: str) -> None:
     st.rerun()
 
 
+def render_progress_insights(prefix: str = "overview") -> None:
+    """只統計實際完成的任務，圖表不將預估時間誤當作實際讀書時間。"""
+    st.subheader("學習成果")
+    st.caption("完成後才計入；分鐘數是任務的「預估時間」，不是實際測得的 K 書時間。")
+    period = st.radio("統計區間", ["1D", "1W", "1M"], index=1,
+                      horizontal=True, key=f"cp_stats_period_{prefix}")
+    summary = history_series(own(data["progress_events"]), own(data["tasks"]),
+                             USER_ID, period, today)
+    c1, c2, c3 = st.columns(3)
+    c1.metric("完成任務", summary["completed"])
+    c2.metric("完成任務預估時間", f"{summary['planned_minutes']} 分鐘")
+    c3.metric("有完成紀錄的日數", summary["active_days"])
+    if summary["completed"]:
+        st.area_chart(summary["rows"], x="date", y="cumulative",
+                      height=230, use_container_width=True)
+    else:
+        st.info("這個期間尚無完成紀錄。將任務標記為完成後，數據才會累積。")
+    if demo_mode:
+        st.caption("目前為展示資料；正式模式僅計算真實的進度修改紀錄。")
+
+
 def render_setup() -> None:
     step = st.session_state.get("cp_setup_step", 0)
     headings = ("一個更簡單的學習流程", "先讓 ClassPulse 認識你的課表",
