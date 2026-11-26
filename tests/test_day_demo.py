@@ -54,3 +54,35 @@ def test_invalid_choice_and_advance_rejected():
     with pytest.raises(ValueError):
         respond(selected, 1)
     assert advance(selected)["index"] == 1
+
+
+def test_declined_ai_task_does_not_falsely_report_scheduled():
+    from day_demo import incoming_for
+
+    state = new_day_state()
+    while state["index"] < 6:
+        state = advance(respond(state, 1))
+    assert SCENES[state["index"]]["time"] == "13:00"
+    state = advance(respond(state, 2))  # 明確拒絕 AI 建議
+    assert state["signals"]["accepted_task_minutes"] is None
+    assert "尚未確認" in incoming_for(state)
+    state = respond(state, 0)
+    assert "不會擅自" in state["messages"][-1]["text"]
+    assert state["signals"]["scheduled_at"] is None
+
+
+def test_ai_accepted_task_updates_schedule_and_evening_progress():
+    state = new_day_state()
+    while state["index"] < 6:
+        state = advance(respond(state, 0))
+    state = advance(respond(state, 1))  # 確認 30 分鐘
+    assert state["signals"]["accepted_task_minutes"] == 30
+    state = advance(respond(state, 0))  # 19:00 排程
+    assert state["signals"]["scheduled_at"] == "19:00"
+    while SCENES[state["index"]]["time"] != "20:15":
+        state = advance(respond(state, 0))
+    state = advance(respond(state, 1))  # 完成 70%
+    assert state["signals"]["task_progress"] == 70
+    state = respond(state, 0)  # 21:00 動態回顧
+    assert "70%" in state["messages"][-1]["text"]
+    assert "已確認 AI 任務：1 項" in state["messages"][-1]["text"]
