@@ -134,3 +134,39 @@ def test_calendar_event_change_to_time_or_back_to_inbox():
                             "event": {"id": "task:t1", "allDay": True,
                                       "start": "2026-11-27"}}}
     assert calendar_change_candidate(back, tasks) == {"kind": "unschedule", "task_id": "t1"}
+
+
+def test_deadline_rejection_has_no_side_effect(monkeypatch, tmp_path):
+    task, _, _, _ = fixture_data(monkeypatch, tmp_path)
+    before_tasks = storage.load_json(storage.data_path("tasks"))
+    before_slots = storage.load_json(storage.data_path("availability"))
+    with pytest.raises(storage.DataError, match="Deadline"):
+        place_task(USER, "t1", "2026-12-03T19:00:00+08:00",
+                   "2026-12-03T20:00:00+08:00", now=NOW)
+    assert storage.load_json(storage.data_path("tasks")) == before_tasks
+    assert storage.load_json(storage.data_path("availability")) == before_slots
+
+
+def test_past_manual_session_cannot_be_unassigned(monkeypatch, tmp_path):
+    fixture_data(monkeypatch, tmp_path)
+    start = datetime(2026, 11, 27, 19, tzinfo=TZ)
+    place_task(USER, "t1", start, start + timedelta(minutes=45), now=NOW)
+    with pytest.raises(storage.DataError, match="已開始"):
+        unassign_task(USER, "t1", now=start + timedelta(minutes=5))
+    assert any(row["task_id"] == "t1" and row["status"] == "scheduled"
+               for row in storage.load_json(storage.data_path("plan")))
+
+
+def test_drag_from_all_day_uses_original_estimate():
+    tasks = [{"task_id": "t1", "estimated_minutes": 45}]
+    change = {
+        "callback": "eventChange",
+        "eventChange": {
+            "oldEvent": {"allDay": True},
+            "event": {"id": "task:t1", "allDay": False,
+                      "start": "2026-11-27T19:00:00+08:00",
+                      "end": "2026-11-28T00:00:00+08:00"}
+        }
+    }
+    result = calendar_change_candidate(change, tasks)
+    assert result["end"] - result["start"] == timedelta(minutes=45)
