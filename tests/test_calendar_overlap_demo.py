@@ -124,3 +124,17 @@ def test_overlap_confirmation_is_dialog_in_actual_streamlit_page(monkeypatch, tm
                       if slot["availability_id"] == assigned["availability_id"])
     assert saved_slot["start_time"] == "09:15"
     assert saved_slot["available_minutes"] == 45
+
+
+def test_dashboard_lists_finished_example_tasks(monkeypatch, tmp_path):
+    monkeypatch.setattr(storage, "DATA_DIR", tmp_path / "live")
+    monkeypatch.setattr(storage, "DEMO_DATA_DIR", tmp_path / "demo")
+    storage.select_demo_storage(False)
+    app = AppTest.from_file(str(APP)).run(timeout=30)
+    app.sidebar.toggle[0].set_value(True).run(timeout=30)
+    assert not app.exception, [str(e) for e in app.exception]
+    assert any("最近完成" in heading.value for heading in app.subheader)
+    text = "\n".join(str(item.value) for item in app.markdown)
+    assert "完成 PID 控制器練習" in text
+    assert "整理傅立葉轉換與頻譜" in text
+    assert "範例紀錄" in text
