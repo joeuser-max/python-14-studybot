@@ -3,12 +3,17 @@ from __future__ import annotations
 
 from collections import defaultdict
 from datetime import date, datetime, time, timedelta
+import json
 
 import streamlit as st
+from streamlit_calendar import calendar as editable_calendar
 
 from ai_assistant import AIError, ai_is_configured, analyze_learning_records
 from calendar_export import export_calendar_ics, google_calendar_url, task_calendar_event
 from day_demo import SCENES, advance, new_day_state, respond, visible_messages
+from progress_insights import history_series
+from visual_planner import (board_events, calendar_change_candidate, place_task,
+                            propose_placement, unassign_task, resume_auto, rebuild_plan)
 from demo_data import mock_learning_suggestions, seed_demo_data
 from task_actions import save_task_changes, delete_task_and_plan
 from exporter import export_learning_markdown
@@ -66,7 +71,7 @@ if demo_mode:
 def read_all() -> dict[str, list]:
     return {name: load_json(data_path(name)) for name in
             ("events", "tasks", "availability", "plan",
-             "reminders", "feedback", "users")}
+             "reminders", "feedback", "users", "progress_events")}
 
 
 def own(items: list) -> list:
@@ -149,6 +154,10 @@ with st.sidebar:
     if not onboarding_done and st.button("跳過初次設定", use_container_width=True):
         saved(lambda: persist_user({"onboarding_complete": True}), "已進入控制台")
     st.caption("LINE 一日展示皆為可重播的情境，不連接真實 LINE。")
+    with st.expander("校園資源", expanded=False):
+        st.link_button("中央大學 K 書空間預約", "https://mwa.lib.ncu.edu.tw/pwaspace/", use_container_width=True)
+        st.link_button("中央大學 ee-class", "https://ncueeclass.ncu.edu.tw", use_container_width=True)
+        st.caption("資料與公告以學校官方網站為準。")
     with st.expander("Donate", expanded=False):
         st.caption("支持 ClassPulse · 資訊展示，非金流服務")
         st.write("**銀行代碼：822**")
