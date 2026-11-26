@@ -123,6 +123,9 @@ nav_options = NAVIGATION if onboarding_done else ("開始設定", "LINE 一日�
 with st.sidebar:
     if not onboarding_done:
         st.info("完成引導設定後才顯示完整控制台，也可以直接跳過。")
+    redirect = st.session_state.pop("cp_next_nav", None)
+    if redirect in nav_options:
+        st.session_state["cp_nav"] = redirect
     if st.session_state.get("cp_nav") not in nav_options:
         st.session_state["cp_nav"] = nav_options[0]
     page = st.radio("功能", nav_options, key="cp_nav")
@@ -232,7 +235,7 @@ def task_dialog(task: dict) -> None:
         save_click = st.form_submit_button("儲存修改", type="primary")
         delete_click = st.form_submit_button("刪除任務")
         if save_click:
-            final_percent = 100 if completed else min(percent, 99)
+            final_percent = 100 if completed or percent == 100 else percent
             edited = {**task, "title": title.strip(), "subject": subject.strip(),
                       "deadline": deadline.isoformat(),
                       "estimated_minutes": int(estimate),
@@ -359,7 +362,8 @@ def generate_schedule() -> None:
 
 
 def go_to(target: str) -> None:
-    st.session_state["cp_nav"] = target
+    # st.radio 已初始化後不能直接寫入其同名 key；下次 rerun 前先排隊。
+    st.session_state["cp_next_nav"] = target
     st.rerun()
 
 
@@ -421,7 +425,7 @@ def render_setup() -> None:
             if st.button("完成設定，進入控制台", type="primary", use_container_width=True):
                 def finish():
                     persist_user({"onboarding_complete": True})
-                    st.session_state["cp_nav"] = "總覽"
+                    st.session_state["cp_next_nav"] = "總覽"
                 saved(finish, "已完成初次設定")
         elif st.button("下一步（也可以略過）", type="primary",
                        use_container_width=True):
@@ -430,7 +434,7 @@ def render_setup() -> None:
     if st.button("跳過全部步驟，直接進入控制台"):
         def skip():
             persist_user({"onboarding_complete": True})
-            st.session_state["cp_nav"] = "總覽"
+            st.session_state["cp_next_nav"] = "總覽"
         saved(skip, "已進入控制台")
 
 
