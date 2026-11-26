@@ -170,3 +170,17 @@ def test_drag_from_all_day_uses_original_estimate():
     }
     result = calendar_change_candidate(change, tasks)
     assert result["end"] - result["start"] == timedelta(minutes=45)
+
+
+def test_existing_started_session_cannot_be_moved_into_future(monkeypatch, tmp_path):
+    fixture_data(monkeypatch, tmp_path)
+    start = datetime(2026, 11, 27, 19, tzinfo=TZ)
+    place_task(USER, "t1", start, start + timedelta(minutes=45), now=NOW)
+    after_start = start + timedelta(minutes=10)
+    with pytest.raises(storage.DataError, match="原定時段"):
+        place_task(USER, "t1", datetime(2026, 11, 28, 20, tzinfo=TZ),
+                   datetime(2026, 11, 28, 20, 45, tzinfo=TZ),
+                   now=after_start)
+    preserved = next(row for row in storage.load_json(storage.data_path("availability"))
+                     if row["availability_id"] == MANUAL_PREFIX + "t1")
+    assert preserved["date"] == "2026-11-27"
