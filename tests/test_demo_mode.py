@@ -69,7 +69,8 @@ def test_mock_ai_suggestions_reference_feedback_without_api():
     )
     assert result["summary"].startswith("【Mock 展示】")
     assert len(result["suggestions"]) == 1
-    assert result["suggestions"][0]["source_feedback_id"] == records["feedback"][0]["feedback_id"]
+    latest = max(records["feedback"], key=lambda row: row["received_at"])
+    assert result["suggestions"][0]["source_feedback_id"] == latest["feedback_id"]
     assert mock_learning_suggestions([], records["events"])["suggestions"] == []
     assert mock_learning_suggestions(records["feedback"], records["events"], "unknown")["suggestions"] == []
 
