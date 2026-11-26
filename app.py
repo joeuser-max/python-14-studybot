@@ -499,7 +499,7 @@ def render_schedule() -> None:
             st.info("尚未建立每週課程。")
         screenshot_preview("planning")
         with st.expander("＋ 新增課程"):
-            add_course_form("planning")
+            add_course_form("planning_course")
     with right:
         st.subheader("可用讀書時段")
         slots = sorted(own(data["availability"]),
@@ -509,7 +509,7 @@ def render_schedule() -> None:
         if not slots:
             st.info("沒有可用時段，Scheduler 暫時無法安排。")
         with st.expander("＋ 新增可用時段"):
-            add_slot_form("planning")
+            add_slot_form("planning_slot")
     st.markdown('<div class="cp-divider"></div>', unsafe_allow_html=True)
     st.subheader("排程結果")
     if st.button("重新安排讀書任務", type="primary"):
