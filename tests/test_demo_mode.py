@@ -1,5 +1,5 @@
 """展示模式的隔離、預設資料、重設與 AI Mock 行為測試。"""
-from datetime import datetime
+from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
 import pytest
@@ -96,7 +96,7 @@ def test_demo_user_journey_edit_feedback_confirm_task_and_schedule(monkeypatch, 
         feedback = {
             "feedback_id": "demo-feedback-new", "user_id": "demo_user_001",
             "event_id": edited["event_id"], "class_date": NOW.date().isoformat(),
-            "received_at": NOW.isoformat(timespec="seconds"), "source": "demo",
+            "received_at": (NOW + timedelta(seconds=1)).isoformat(timespec="seconds"), "source": "demo",
             "content": "課程內容還有一個問題需要練習", "progress": 2,
             "reminder_id": "", "webhook_event_id": "demo-event-new",
         }
@@ -106,13 +106,14 @@ def test_demo_user_journey_edit_feedback_confirm_task_and_schedule(monkeypatch, 
             storage.load_json(storage.data_path("events")),
         )
         suggestion = response["suggestions"][0]
+        assert suggestion["source_feedback_id"] == feedback["feedback_id"]
         # 檢查使用者確認的建議才會成為正式任務
         assert not any(t.get("source_feedback_id") == suggestion["source_feedback_id"]
                        for t in storage.load_json(storage.data_path("tasks")))
         task = {
             "task_id": "confirmed-demo-task", "user_id": "demo_user_001",
             "subject": suggestion["topic"], "title": suggestion["suggested_task"],
-            "deadline": (NOW.date() + __import__("datetime").timedelta(days=7)).isoformat(),
+            "deadline": (NOW.date() + timedelta(days=7)).isoformat(),
             "estimated_minutes": 30, "status": "pending",
             "preferred_availability_id": "",
             "source_feedback_id": suggestion["source_feedback_id"],
