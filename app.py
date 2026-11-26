@@ -693,11 +693,12 @@ def render_overview() -> None:
          "不必在每個工具裡重複管理。這裡只保留真正需要你決定的事情。")
     tasks = own(data["tasks"])
     pending = [t for t in tasks if t.get("status") != "completed"]
-    c1, c2, c3 = st.columns(3)
+    c1, c2, c3, c4 = st.columns(4)
     c1.metric("待完成任務", len(pending))
-    c2.metric("已建立課程", len(own(data["events"])))
+    c2.metric("已建立課次", len(own(data["events"])))
     c3.metric("已安排讀書", sum(r.get("status") == "scheduled"
                                for r in own(data["plan"])))
+    c4.metric("目前已完成", sum(t.get("status") == "completed" for t in tasks))
     st.write("")
     render_progress_insights("overview")
     st.markdown('<div class="cp-divider"></div>', unsafe_allow_html=True)
@@ -707,6 +708,38 @@ def render_overview() -> None:
             task_card(task)
     else:
         st.success("目前沒有待完成的任務。")
+    st.write("")
+    st.subheader("最近完成")
+    completed_lookup = {t["task_id"]: t for t in tasks
+                        if t.get("status") == "completed"}
+    latest_completed = sorted(
+        (entry for entry in own(data["progress_events"])
+         if entry.get("status") == "completed"
+         and entry.get("task_id") in completed_lookup),
+        key=lambda entry: entry.get("timestamp", ""), reverse=True,
+    )
+    shown_ids = set()
+    recent = []
+    for entry in latest_completed:
+        if entry["task_id"] in shown_ids:
+            continue
+        shown_ids.add(entry["task_id"])
+        recent.append((completed_lookup[entry["task_id"]], entry))
+        if len(recent) == 5:
+            break
+    if recent:
+        with st.container(border=True):
+            for i, (item, entry) in enumerate(recent):
+                if i:
+                    st.divider()
+                label = " · 範例紀錄" if entry.get("source") == "demo_seed" else ""
+                st.write(f"✓ **{item['title']}**")
+                st.caption(f"{item['subject']} · {entry['timestamp'][:16].replace('T', ' ')}"
+                           f" · 預估 {item['estimated_minutes']} 分鐘{label}")
+        if demo_mode:
+            st.caption("展示完成紀錄為範例；正式模式只顯示實際已儲存的完成事件。")
+    else:
+        st.caption("完成並儲存任務後，這裡就會顯示最近的成果。")
     st.write("")
     st.subheader("下一步")
     a, b, c = st.columns(3)
