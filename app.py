@@ -692,6 +692,19 @@ def render_line_day() -> None:
             label = "✓" if i < state["index"] or state["completed"] else (
                 "●" if i == state["index"] else "·")
             st.caption(f"{label}  {scene['time']}  {scene['title']}")
+        signals = state.get("signals", {})
+        with st.expander("本日模擬狀態", expanded=True):
+            st.caption("理解度：" + (
+                f"{signals['understanding']} / 5"
+                if signals.get("understanding") is not None else "尚未回報"))
+            st.caption("課後筆記：" + ("已記錄" if signals.get("note") else "尚未記錄"))
+            st.caption("AI 建議任務：" + (
+                f"已確認（{signals['accepted_task_minutes']} 分鐘）"
+                if signals.get("accepted_task_minutes") else "尚未確認"))
+            st.caption("排程：" + str(signals.get("scheduled_at") or "尚未排入"))
+            st.caption("任務完成度：" + (
+                f"{signals['task_progress']}%"
+                if signals.get("task_progress") is not None else "尚未回報"))
         st.write("")
         if st.button("一鍵播放完整一天", use_container_width=True):
             next_state = state
@@ -708,8 +721,15 @@ def render_line_day() -> None:
         with st.container(border=True):
             st.markdown("#### LINE · ClassPulse（虛擬介面）")
             st.caption("以下訊息與回覆均為展示腳本，不是真實 LINE 對話")
+            messages = visible_messages(state)
             with st.container(height=510):
-                for message in visible_messages(state):
+                if len(messages) > 9:
+                    with st.expander(f"查看較早的對話（{len(messages) - 9} 則）"):
+                        for old_msg in messages[:-9]:
+                            st.caption(f"{old_msg['at']} · {'ClassPulse' if old_msg['role'] == 'bot' else '使用者'}")
+                            st.write(old_msg["text"])
+                            st.divider()
+                for message in messages[-9:]:
                     is_bot = message["role"] == "bot"
                     with st.chat_message("assistant" if is_bot else "user"):
                         st.caption(f"{message['at']} · {'ClassPulse' if is_bot else '使用者'}")
