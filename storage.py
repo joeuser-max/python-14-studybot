@@ -5,6 +5,7 @@
 """
 from __future__ import annotations
 
+from contextvars import ContextVar
 import json
 import os
 import tempfile
@@ -20,6 +21,8 @@ from filelock import FileLock, Timeout
 ROOT = Path(__file__).resolve().parent
 load_dotenv(ROOT / ".env")
 DATA_DIR = Path(os.environ.get("CLASSPULSE_DATA_DIR", str(ROOT / "data"))).resolve()
+DEMO_DATA_DIR = ROOT / ".classpulse-demo-data"
+_ACTIVE_DATA_DIR: ContextVar[Path | None] = ContextVar("classpulse_active_data_dir", default=None)
 FILES = {
     "events": "events.json", "tasks": "tasks.json", "availability": "availability.json",
     "plan": "plan.json", "users": "users.json", "reminders": "reminders.json",
@@ -33,10 +36,20 @@ class DataError(ValueError):
     """資料錯誤，應在 Streamlit 顯示給使用者。"""
 
 
+def select_demo_storage(enabled: bool) -> None:
+    """只為目前的執行 context 切換展示資料，不更動 LINE Worker 的正式資料路徑。"""
+    _ACTIVE_DATA_DIR.set(DEMO_DATA_DIR if enabled else None)
+
+
+def is_demo_storage() -> bool:
+    return _ACTIVE_DATA_DIR.get() is not None
+
+
 def data_path(name: str) -> Path:
     if name not in FILES:
         raise DataError(f"未知的資料類型：{name}")
-    return DATA_DIR / FILES[name]
+    directory = _ACTIVE_DATA_DIR.get()
+    return (directory if directory is not None else DATA_DIR) / FILES[name]
 
 
 def _read_unlocked(path: Path) -> list:
