@@ -6,6 +6,7 @@ from datetime import date, datetime, time, timedelta
 import json
 
 import streamlit as st
+from version_info import get_version_info
 from streamlit_calendar import calendar as editable_calendar
 
 from ai_assistant import AIError, ai_is_configured, analyze_learning_records
@@ -56,9 +57,17 @@ h2,h3 {letter-spacing:-.025em!important;font-weight:680!important;}
 </style>
 """, unsafe_allow_html=True)
 
+version = get_version_info()
 with st.sidebar:
     st.markdown("### ◉ ClassPulse")
     st.caption("把複雜的安排，交給系統。")
+    st.caption(f"目前程式：{version['branch']} · {version['sha']}")
+    if version["branch"] not in ("main", "未取得 Git 分支"):
+        st.warning("你正在使用功能分支，不是已合併的 main。")
+    with st.expander("查看執行目錄及版本", expanded=False):
+        st.code(version["directory"], language=None)
+        st.caption("這是此網頁實際載入 app.py 的資料夾；若不是你更新的專案目錄，請關閉舊網站。")
+        st.caption("請使用 start_mac.sh 或 start_windows.ps1 更新 main，統一由 localhost:8502 開啟。")
     st.divider()
     demo_mode = st.toggle("展示模式", value=False, key="classpulse_demo_mode")
     if demo_mode:
