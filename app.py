@@ -219,7 +219,7 @@ def add_task_form(prefix: str) -> None:
                     "subject": subject.strip(), "title": title.strip(),
                     "deadline": deadline.isoformat(), "estimated_minutes": int(minutes),
                     "status": "pending", "progress_percent": 0,
-                    "preferred_availability_id": ""}
+                    "preferred_availability_id": "", "source": "manual_user"}
             saved(lambda: add_task_to_storage(item), "任務已建立")
 
 
@@ -349,7 +349,8 @@ def task_card(task: dict) -> None:
     with st.container(border=True):
         left, right = st.columns([5, 1], vertical_alignment="center")
         with left:
-            if st.button(f"{task['title']}  ·  {task['subject']}",
+            ai_label = "  ·  ✦ AI 建議" if task.get("source") == "ai_confirmed" else ""
+            if st.button(f"{task['title']}  ·  {task['subject']}{ai_label}",
                          key=f"cp_task_{task['task_id']}",
                          use_container_width=True):
                 task_dialog(task)
