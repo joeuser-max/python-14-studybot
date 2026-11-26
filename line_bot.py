@@ -188,6 +188,9 @@ def _bind_demo_user(line_user_id: str) -> None:
     def bind(rows: list) -> list:
         user = next((row for row in rows if row.get("user_id") == DEMO_USER_ID), None)
         if user:
+            already_bound = user.get("line_user_id")
+            if already_bound and already_bound != line_user_id:
+                raise DataError("示範帳號已綁定其他 LINE 使用者，請由管理員確認後再變更")
             user["line_user_id"] = line_user_id
             user.setdefault("reminders_enabled", True)
             user.setdefault("study_reminders_enabled", False)
@@ -543,8 +546,12 @@ def _process_event(event: dict, now: datetime) -> None:
         if not line_user_id:
             reply_line_message(reply_token, "目前只支援 LINE 個人帳號綁定。")
         elif binding_code and hmac.compare_digest(binding_code, supplied_code):
-            _bind_demo_user(line_user_id)
-            reply_line_message(reply_token, "LINE 帳號已綁定 ClassPulse，可以開始接收提醒。")
+            try:
+                _bind_demo_user(line_user_id)
+            except DataError as exc:
+                reply_line_message(reply_token, f"無法綁定：{exc}")
+            else:
+                reply_line_message(reply_token, "LINE 帳號已綁定 ClassPulse，可以開始接收提醒。")
         else:
             reply_line_message(reply_token, "綁定碼不正確或尚未設定，請檢查後再試。")
         _mark_processed(webhook_event_id, now)
