@@ -95,3 +95,64 @@ def test_group_open_stays_on_legacy_path(setup):
     assert post(client, [message]).status_code == 200
     assert forwarded[0]["events"] == [message]
     assert not users() and not replies
+
+
+def test_personal_note_sync_reads_web_course_and_writes_same_owner(setup, monkeypatch):
+    from datetime import datetime, timedelta
+    import line_bot
+    monkeypatch.setenv("CLASSPULSE_FRIEND_NOTE_SYNC", "1")
+    client, replies, forwarded = setup
+    monkeypatch.setattr(line_bot, "reply_line_message",
+                        lambda token, text, choices=None: replies.append(text))
+    def unexpected_ai(*args, **kwargs):
+        pytest.fail("note-only sync must not call AI")
+    monkeypatch.setattr(line_bot, "organize_class_feedback", unexpected_ai)
+    def msg(eid, text):
+        return event(eid, message={"type": "text", "text": text})
+    assert post(client, [msg("open", "開啟網頁")]).status_code == 200
+    uid = users()[0]["user_id"]
+    day = (datetime.now(storage.TZ) - timedelta(days=1)).date()
+    weekday = day.isoweekday()
+    course = {"event_id": "web-test-course", "user_id": uid, "event_type": "class",
+              "title": "LINE_E2E_TEST", "weekday": weekday,
+              "start_time": "00:00", "end_time": "00:01",
+              "enabled": True, "offset_minutes": 0, "prompt_template": "class_feedback"}
+    storage.update_json(storage.data_path("events"), lambda rows: rows + [course])
+    assert post(client, [msg("start", "補筆記"), msg("weekday", str(weekday))]).status_code == 200
+    assert "LINE_E2E_TEST" in replies[-1]
+    selected = next(line.split(".")[0] for line in replies[-1].splitlines() if "LINE_E2E_TEST" in line)
+    assert post(client, [msg("class", selected), msg("rating", "3"),
+                         msg("note", "LINE_E2E_NOTE_MARKER")]).status_code == 200
+    matching = [n for n in storage.load_json(storage.data_path("feedback"))
+                if n.get("content") == "LINE_E2E_NOTE_MARKER"]
+    assert len(matching) == 1 and matching[0]["user_id"] == uid
+    assert matching[0]["event_id"] == course["event_id"] and matching[0]["progress"] == 3
+    assert forwarded == []
+    assert post(client, [msg("note", "LINE_E2E_NOTE_MARKER")]).status_code == 200
+    assert forwarded == []
+    assert len([n for n in storage.load_json(storage.data_path("feedback"))
+                if n.get("content") == "LINE_E2E_NOTE_MARKER"]) == 1
+    assert post(client, [msg("search", "搜尋 LINE_E2E_NOTE_MARKER")]).status_code == 200
+    assert "LINE_E2E_NOTE_MARKER" in replies[-1]
+
+
+def test_note_sync_keeps_unregistered_and_legacy_commands_on_legacy_path(setup, monkeypatch):
+    monkeypatch.setenv("CLASSPULSE_FRIEND_NOTE_SYNC", "1")
+    client, replies, forwarded = setup
+    unknown = event("unknown", message={"type": "text", "text": "補筆記"})
+    assert post(client, [unknown]).status_code == 200
+    assert forwarded[-1]["events"] == [unknown] and not users()
+    assert post(client, [event("open", message={"type": "text", "text": "開啟網頁"})]).status_code == 200
+    for eid, text in [("bind", "綁定 test"), ("complete", "完成"), ("other", "你好")]:
+        ev = event(eid, message={"type": "text", "text": text})
+        assert post(client, [ev]).status_code == 200
+        assert forwarded[-1]["events"] == [ev]
+
+
+def test_note_sync_default_off_preserves_old_routing(setup, monkeypatch):
+    monkeypatch.delenv("CLASSPULSE_FRIEND_NOTE_SYNC", raising=False)
+    client, replies, forwarded = setup
+    assert post(client, [event("open", message={"type": "text", "text": "開啟網頁"})]).status_code == 200
+    ev = event("old", message={"type": "text", "text": "補筆記"})
+    assert post(client, [ev]).status_code == 200
+    assert forwarded[-1]["events"] == [ev]
