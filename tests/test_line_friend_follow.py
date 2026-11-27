@@ -19,6 +19,7 @@ def setup(tmp_path, monkeypatch):
     monkeypatch.setenv("LINE_CHANNEL_SECRET", SECRET)
     monkeypatch.setenv("LINE_BINDING_CODE", "test-code")
     monkeypatch.setenv("LINE_FRIEND_DEMO_ENABLED", "1")
+    monkeypatch.delenv("LINE_FRIEND_DEMO_SEED_ENABLED", raising=False)
     replies = []
     monkeypatch.setattr(line_bot, "reply_line_message",
                         lambda token, text, choices=None: replies.append(text))
@@ -134,3 +135,34 @@ def test_storage_failure_does_not_mark_event_processed(setup, monkeypatch):
         post(client, event("failure"))
     assert storage.load_json(storage.data_path("processed_webhooks")) == []
     assert not replies
+
+
+def test_opt_in_follow_seeds_only_once_and_still_blocks_messages(setup, monkeypatch):
+    client, replies = setup
+    monkeypatch.setenv("LINE_FRIEND_DEMO_SEED_ENABLED", "1")
+    assert post(client, event("seed")).status_code == 200
+    a = users()[0]
+    assert a["demo_status"] == "seeded_pending_auth"
+    assert "尚待網頁身份驗證" in replies[-1]
+    courses = storage.load_json(storage.data_path("events"))
+    assert len(courses) == 14
+    assert post(client, event("seed")).status_code == 200
+    assert post(client, event("seed-again")).status_code == 200
+    assert users() == [a]
+    assert storage.load_json(storage.data_path("events")) == courses
+    monkeypatch.delenv("LINE_FRIEND_DEMO_ENABLED")
+    def unexpected(*args, **kwargs):
+        pytest.fail("seeded but unauthenticated user must remain gated")
+    monkeypatch.setattr(line_bot, "_handle_text_event", unexpected)
+    assert post(client, event("note", kind="message",
+                              message={"type": "text", "text": "筆記 test"})).status_code == 200
+    assert "尚待網頁身份驗證" in replies[-1]
+
+
+def test_seed_flag_alone_does_not_enable_registration(setup, monkeypatch):
+    client, replies = setup
+    monkeypatch.delenv("LINE_FRIEND_DEMO_ENABLED")
+    monkeypatch.setenv("LINE_FRIEND_DEMO_SEED_ENABLED", "1")
+    assert post(client, event("off-seed")).status_code == 200
+    assert users() == []
+    assert "綁定" in replies[-1]
