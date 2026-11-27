@@ -156,3 +156,83 @@ def test_note_sync_default_off_preserves_old_routing(setup, monkeypatch):
     ev = event("old", message={"type": "text", "text": "補筆記"})
     assert post(client, [ev]).status_code == 200
     assert forwarded[-1]["events"] == [ev]
+
+
+def test_real_ai_requires_single_note_consent_and_keeps_purple_confirmation(setup, monkeypatch):
+    from datetime import datetime, timedelta
+    import line_bot
+    monkeypatch.setenv("CLASSPULSE_FRIEND_NOTE_SYNC", "1")
+    monkeypatch.setenv("CLASSPULSE_FRIEND_AI_SYNC", "1")
+    monkeypatch.setenv("OPENAI_API_KEY", "offline-test")
+    monkeypatch.setenv("OPENAI_MODEL", "offline-test")
+    client, replies, forwarded = setup
+    monkeypatch.setattr(line_bot, "reply_line_message",
+                        lambda token, text, choices=None: replies.append(text))
+    calls = []
+    def analyze(feedback, course):
+        calls.append((feedback["content"], course))
+        return {"summary": "測試摘要", "key_points": ["根軌跡"],
+                "unresolved_questions": ["如何處理零首項？", "如何辨識虛軸根？"],
+                "topic_tags": ["根軌跡"], "suggested_task": "複習兩題",
+                "estimated_minutes": 60}
+    monkeypatch.setattr(line_bot, "organize_class_feedback", analyze)
+    def send(eid, text):
+        assert post(client, [event(eid, message={"type": "text", "text": text})]).status_code == 200
+    send("open-ai", "開啟網頁")
+    uid = users()[0]["user_id"]
+    now = datetime.now(storage.TZ)
+    day = (now - timedelta(days=1)).date()
+    course = {"event_id": "ai-web-course", "user_id": uid, "event_type": "class",
+              "title": "AI_E2E_TEST", "weekday": day.isoweekday(),
+              "start_time": "00:00", "end_time": "00:01",
+              "enabled": True, "offset_minutes": 0, "prompt_template": "class_feedback"}
+    storage.update_json(storage.data_path("events"), lambda rows: rows + [course])
+    def finish_note(prefix, text):
+        weekday = next(k for k, v in line_bot.WEEKDAYS.items() if v == day.isoweekday())
+        send(prefix+"weekday", weekday)
+        selected = next(l.split(".")[0] for l in replies[-1].splitlines() if "AI_E2E_TEST" in l)
+        send(prefix+"course", selected)
+        send(prefix+"rating", "3")
+        send(prefix+"note", text)
+    send("no-consent", "同意AI整理")
+    assert not calls
+    send("ordinary", "補筆記")
+    finish_note("ordinary-", "普通測試筆記")
+    assert not calls
+    send("ai-start", "AI補筆記")
+    assert "OpenAI API" in replies[-1]
+    send("ai-agree", "同意AI整理")
+    before = len(storage.load_json(storage.data_path("tasks")))
+    finish_note("real-", "不懂零首項與虛軸根的判斷")
+    assert calls == [("不懂零首項與虛軸根的判斷", "AI_E2E_TEST")]
+    assert len(storage.load_json(storage.data_path("tasks"))) == before
+    notes = storage.load_json(storage.data_path("feedback"))
+    note = next(n for n in notes if n.get("content") == calls[0][0])
+    assert note["user_id"] == uid and note["ai_analysis"]["summary"] == "測試摘要"
+    send("accept-first", "加入讀書任務")
+    send("skip-second", "先不用")
+    tasks = storage.load_json(storage.data_path("tasks"))
+    created = [t for t in tasks if t.get("source_feedback_id") == note["feedback_id"]]
+    assert len(tasks) == before + 1 and len(created) == 1
+    assert created[0]["user_id"] == uid and created[0]["estimated_minutes"] == 30
+    assert created[0]["source"] == "ai_confirmed"
+    assert not any(p.get("task_id") == created[0]["task_id"]
+                   for p in storage.load_json(storage.data_path("plan")))
+    assert users()[0].get("ai_after_class_enabled") is False
+    assert forwarded == []
+    send("real-note", "不懂零首項與虛軸根的判斷")
+    assert len(calls) == 1
+
+
+def test_ai_command_default_off_does_not_start_paid_flow(setup, monkeypatch):
+    monkeypatch.setenv("CLASSPULSE_FRIEND_NOTE_SYNC", "1")
+    monkeypatch.delenv("CLASSPULSE_FRIEND_AI_SYNC", raising=False)
+    import line_bot
+    client, replies, forwarded = setup
+    monkeypatch.setattr(line_bot, "reply_line_message",
+                        lambda token, text, choices=None: replies.append(text))
+    assert post(client, [event("open", message={"type": "text", "text": "開啟網頁"})]).status_code == 200
+    assert post(client, [event("ai", message={"type": "text", "text": "AI補筆記"})]).status_code == 200
+    assert "尚未啟用" in replies[-1]
+    assert not storage.load_json(storage.data_path("pending_notes"))
+    assert not forwarded
