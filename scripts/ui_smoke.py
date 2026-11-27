@@ -94,6 +94,7 @@ def main():
 
                     page.get_by_role("tab", name="行事曆與拖排").click()
                     expect(page.locator(".cards .card")).to_have_count(8, timeout=25000)
+                    print("瀏覽器已通過：LINE 六步引導、Mock 筆記與重設", flush=True)
 
                     # Resize a pending card by dragging its right-hand handle.
                     grip = page.locator(".cards .card").first.locator(".grip")
