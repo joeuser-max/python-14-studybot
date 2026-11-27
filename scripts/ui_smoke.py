@@ -116,6 +116,15 @@ def main():
                     # Drag resized task to T+4 at 20:00: safely before its T+5
                     # deadline and clear of classes and the initial study plan.
                     # Row C (20:00) = row index 12; day T+4 = column index 4.
+                    page.evaluate("""() => {
+                      window.__cpDragTrace = [];
+                      for (const type of ["dragstart","dragenter","dragover","drop","dragend"]) {
+                        document.addEventListener(type, (event) => {
+                          const name = event.target && event.target.className;
+                          window.__cpDragTrace.push(type + ":" + String(name));
+                        }, true);
+                      }
+                    }""")
                     # HTML5 DnD needs a real pointer journey to fire dragover/
                     # drop reliably in Chrome (the direct drag_to shortcut can miss
                     # nested CSS-grid destinations after a Streamlit remount).
@@ -130,6 +139,7 @@ def main():
                     page.mouse.move(tx, ty, steps=18)
                     page.mouse.up()
                     page.wait_for_timeout(900)
+                    print("HTML5 drag trace:", page.evaluate("window.__cpDragTrace"), flush=True)
                     problems = page.get_by_text("規劃操作未儲存：", exact=False).all_text_contents()
                     assert not problems, "排程操作被後端拒絕：" + " ; ".join(problems)
                     expect(page.locator(".cards .card")).to_have_count(7, timeout=25000)
