@@ -17,7 +17,7 @@ FLAG = "CLASSPULSE_FRIEND_CLASS_PUSH"
 WINDOW = timedelta(minutes=15)
 
 
-def occurrences(now=None):
+def occurrences(now=None, *, automatic=False):
     require_config(FLAG)
     now = (now or datetime.now(storage.TZ)).astimezone(storage.TZ)
     users = storage.load_json(storage.data_path("users"))
@@ -32,6 +32,8 @@ def occurrences(now=None):
         try:
             uid = _owner(subject)
         except AuthError:
+            continue
+        if automatic and user.get("reminders_enabled") is not True:
             continue
         for course in events:
             if (course.get("user_id") != uid or course.get("event_type") != "class"
@@ -73,7 +75,7 @@ def occurrences(now=None):
     return sorted(out, key=lambda s: (s["due"], s["event_id"]))
 
 
-def deliver_once(selection, now=None):
+def deliver_once(selection, now=None, *, automatic=False):
     require_config(FLAG)
     now = (now or datetime.now(storage.TZ)).astimezone(storage.TZ)
     # Same lock as the official bridge: do not overwrite a conversation.
@@ -82,7 +84,7 @@ def deliver_once(selection, now=None):
                and r.get("user_id") == selection["user_id"]
                and r.get("status") == "sent" for r in storage.load_json(storage.data_path("reminders"))):
             return "sent"
-        matches = [s for s in occurrences(now)
+        matches = [s for s in occurrences(now, automatic=automatic)
                    if s["reminder_id"] == selection["reminder_id"]
                    and s["user_id"] == selection["user_id"]]
         if len(matches) != 1:
@@ -136,7 +138,7 @@ def main():
     raw = input("選擇一堂課（Enter 取消）：").strip()
     if not raw.isdecimal() or not 1 <= int(raw) <= len(options):
         return
-    if input("同意此課次向自己的 LINE 發送課後提醒？輸入 SEND：").strip() != "SEND":
+    if input("同意此課次向自己的 LINE 發送課後提醒？輸入 SEND：").strip().upper() != "SEND":
         return
     selected = options[int(raw)-1]
     while True:
