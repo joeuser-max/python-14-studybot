@@ -1,0 +1,20 @@
+{
+  "format": "classpulse_training_profile",
+  "schema_version": 1,
+  "training": {
+    "name": "示範・晚間固定訓練型",
+    "sessions_per_week": 4,
+    "preferred_periods": [
+      "A",
+      "B",
+      "C"
+    ],
+    "maximum_blocks": 2,
+    "goal": "虛構資料：固定晚間小時段"
+  },
+  "evidence": {
+    "completion_rate": null,
+    "checkin_rate": null,
+    "verification": "self_reported_unverified"
+  }
+}

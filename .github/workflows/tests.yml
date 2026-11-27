@@ -1,9 +1,9 @@
 name: ClassPulse tests
 on:
   pull_request:
-    branches: [main]
+    branches: [main, feature/rich-demo-fixtures]
   push:
-    branches: [main]
+    branches: [main, integrate/v2-line-preference-final1]
 jobs:
   pytest:
     runs-on: ubuntu-latest
@@ -18,6 +18,19 @@ jobs:
         run: python -m pytest -q
       - name: 檢查 Python 語法
         run: python -m compileall -q app.py ai_assistant.py line_bot.py reminder_worker.py calendar_events.py
+      - name: 安裝瀏覽器測試工具（僅 CI 使用）
+        run: |
+          python -m pip install "playwright>=1.56,<2"
+          python -m playwright install --with-deps chromium
+      - name: 驗證七日拖排在瀏覽器內可互動
+        run: python scripts/ui_smoke.py
+      - name: 保留失敗時的瀏覽器截圖
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: classpulse-week-board-failure
+          path: /tmp/classpulse-ui-smoke-failure.png
+          if-no-files-found: ignore
       - name: 驗證 Streamlit 網頁 HTTP 服務可啟動
         run: |
           python -m streamlit run app.py --server.headless true --server.port 8501 > /tmp/classpulse-streamlit.log 2>&1 &

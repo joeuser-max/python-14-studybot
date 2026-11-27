@@ -3,7 +3,6 @@ from zoneinfo import ZoneInfo
 
 
 TZ = ZoneInfo("Asia/Taipei")
-STUDY_SESSION_START_GRACE = timedelta(minutes=15)
 
 
 def _iso(value: datetime) -> str:
@@ -34,25 +33,42 @@ def _scheduled_start(row: dict, slot: dict) -> datetime:
     return _date_and_time(slot["date"], slot["start_time"])
 
 
-def _session_reminder_id(kind: str, task_id: str, slot_id: str, start: datetime) -> str:
-    return f"{kind}_{task_id}_{slot_id}_{start.strftime('%Y%m%d%H%M')}"
+
+def _session_reminder_id(kind, task_id, slot_id, when):
+    return f"{kind}_{task_id}_{slot_id}_{when:%Y%m%d%H%M}"
 
 
-def _existing_session_reminder(
-    existing: dict[tuple, list[dict]],
-    key: tuple,
-    scheduled_at: str,
-) -> dict | None:
-    candidates = existing.get(key, [])
-    exact = next(
-        (item for item in candidates if item.get("scheduled_at") == scheduled_at),
-        None,
-    )
-    if exact:
-        return exact
+def _existing_session_reminder(reminders, key, when):
+    matches = []
+    legacy = []
+
+    for item in reminders:
+        identity = (
+            item.get("user_id"),
+            item.get("task_id"),
+            item.get("availability_id"),
+        )
+        if identity != key:
+            continue
+
+        raw = item.get("scheduled_at")
+        if not raw:
+            legacy.append(item)
+            continue
+
+        try:
+            dt = datetime.fromisoformat(raw)
+            dt = dt.astimezone(TZ) if dt.tzinfo else dt.replace(tzinfo=TZ)
+        except (ValueError, TypeError):
+            continue
+
+        if _iso(dt) == _iso(when):
+            matches.append(item)
+
+    candidates = matches or legacy
     return next(
-        (item for item in reversed(candidates) if item.get("status") != "sent"),
-        None,
+        (r for r in candidates if r.get("status") == "sent"),
+        candidates[-1] if candidates else None,
     )
 
 
@@ -85,7 +101,23 @@ def make_plan(
     now: datetime,
 ) -> dict:
     now = now.astimezone(TZ) if now.tzinfo else now.replace(tzinfo=TZ)
-    previous = {row["task_id"]: row for row in previous_plan if "task_id" in row}
+    owners = {task.get("user_id") for task in tasks}
+    if len(owners) > 1:
+        # Independent users may study at exactly the same time.
+        combined = {"plan": [], "new_alerts": []}
+        for owner in sorted(owners, key=str):
+            result = make_plan(
+                [task for task in tasks if task.get("user_id") == owner],
+                [slot for slot in availability if slot.get("user_id") == owner],
+                [row for row in previous_plan if row.get("user_id") == owner],
+                now,
+            )
+            combined["plan"].extend({**row, "user_id": owner} for row in result["plan"])
+            combined["new_alerts"].extend(result["new_alerts"])
+        return combined
+    owner = next(iter(owners), None)
+    previous = {row["task_id"]: row for row in previous_plan if "task_id" in row
+                and row.get("user_id", owner) == owner}
     new_alerts: list[str] = []
     plan: list[dict] = []
     used_slots: set[str] = set()
@@ -359,24 +391,30 @@ def get_due_study_reminders(
         user["user_id"] for user in users
         if user.get("study_reminders_enabled", False)
         and user.get("line_user_id")
+        and user.get("demo_status") not in ("pending_seed", "seeded_pending_auth")
     }
-    existing: dict[tuple, list[dict]] = {}
-    for item in reminders:
-        if (
-            item.get("kind") == "study_session"
-            and item.get("status") in {"pending", "sent", "failed"}
-        ):
-            key = (item.get("user_id"), item.get("task_id"), item.get("availability_id"))
-            existing.setdefault(key, []).append(item)
-    task_map = {task["task_id"]: task for task in tasks}
-    slot_map = {slot["availability_id"]: slot for slot in availability}
+    existing = [
+        item
+        for item in reminders
+        if item.get("kind") == "study_session"
+        and item.get("status") in {"pending", "sent", "failed"}
+    ]
+    task_map = {(task.get("user_id"), task["task_id"]): task for task in tasks}
+    slot_map = {(slot.get("user_id"), slot["availability_id"]): slot for slot in availability}
     due = []
 
     for row in plan:
         if row.get("status") != "scheduled":
             continue
-        task = task_map.get(row["task_id"])
-        slot = slot_map.get(row["availability_id"])
+        owner = row.get("user_id")
+        if owner is None:
+            # Legacy plan rows without owner may be resolved only if unambiguous.
+            owners = {uid for uid, tid in task_map if tid == row["task_id"]}
+            if len(owners) != 1:
+                continue
+            owner = next(iter(owners))
+        task = task_map.get((owner, row["task_id"]))
+        slot = slot_map.get((owner, row["availability_id"]))
         if not task or not slot or task.get("status") != "pending":
             continue
         user_id = task["user_id"]
@@ -384,18 +422,16 @@ def get_due_study_reminders(
             continue
         key = (user_id, task["task_id"], slot["availability_id"])
         start = _scheduled_start(row, slot)
-        old = _existing_session_reminder(existing, key, _iso(start))
+        old = _existing_session_reminder(existing, key, start)
         if old and old.get("status") == "sent":
             continue
         if old:
             if old.get("status") != "sent" and start <= now:
                 due.append(dict(old))
             continue
-        if start <= now and start >= now - STUDY_SESSION_START_GRACE:
+        if start <= now and start >= now - timedelta(minutes=15):
             due.append({
-                "reminder_id": _session_reminder_id(
-                    "study", task["task_id"], slot["availability_id"], start
-                ),
+                "reminder_id": _session_reminder_id("study", task["task_id"], slot["availability_id"], start),
                 "user_id": user_id,
                 "event_id": "",
                 "task_id": task["task_id"],
@@ -422,24 +458,30 @@ def get_due_study_checkins(
     enabled_users = {
         user["user_id"] for user in users
         if user.get("study_reminders_enabled", False) and user.get("line_user_id")
+        and user.get("demo_status") not in ("pending_seed", "seeded_pending_auth")
     }
-    existing: dict[tuple, list[dict]] = {}
-    for item in reminders:
-        if (
-            item.get("kind") == "study_session_checkin"
-            and item.get("status") in {"pending", "sent", "failed"}
-        ):
-            key = (item.get("user_id"), item.get("task_id"), item.get("availability_id"))
-            existing.setdefault(key, []).append(item)
-    task_map = {task["task_id"]: task for task in tasks}
-    slot_map = {slot["availability_id"]: slot for slot in availability}
+    existing = [
+        item
+        for item in reminders
+        if item.get("kind") == "study_session_checkin"
+        and item.get("status") in {"pending", "sent", "failed"}
+    ]
+    task_map = {(task.get("user_id"), task["task_id"]): task for task in tasks}
+    slot_map = {(slot.get("user_id"), slot["availability_id"]): slot for slot in availability}
     due = []
 
     for row in plan:
         if row.get("status") != "scheduled":
             continue
-        task = task_map.get(row.get("task_id"))
-        slot = slot_map.get(row.get("availability_id"))
+        owner = row.get("user_id")
+        if owner is None:
+            # Preserve the unambiguous legacy ownerless plan contract.
+            owners = {uid for uid, tid in task_map if tid == row.get("task_id")}
+            if len(owners) != 1:
+                continue
+            owner = next(iter(owners))
+        task = task_map.get((owner, row.get("task_id")))
+        slot = slot_map.get((owner, row.get("availability_id")))
         if not task or not slot or task.get("status") != "pending":
             continue
         user_id = task.get("user_id")
@@ -449,7 +491,7 @@ def get_due_study_checkins(
         key = (user_id, task["task_id"], slot["availability_id"])
         start = _scheduled_start(row, slot)
         session_end = start + timedelta(minutes=_task_minutes(task))
-        old = _existing_session_reminder(existing, key, _iso(session_end))
+        old = _existing_session_reminder(existing, key, session_end)
         if old and old.get("status") == "sent":
             continue
         if old:
@@ -458,9 +500,7 @@ def get_due_study_checkins(
             continue
         if session_end <= now and session_end >= now - timedelta(minutes=5):
             due.append({
-                "reminder_id": _session_reminder_id(
-                    "checkin", task["task_id"], slot["availability_id"], start
-                ),
+                "reminder_id": _session_reminder_id("checkin", task["task_id"], slot["availability_id"], session_end),
                 "user_id": user_id,
                 "event_id": "",
                 "task_id": task["task_id"],

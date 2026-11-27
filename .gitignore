@@ -5,3 +5,6 @@ __pycache__/
 .pytest_cache/
 .classpulse-demo-data/
 .venv/
+
+# All local runtime data, including JSON locks and attachments, stays off GitHub.
+data/

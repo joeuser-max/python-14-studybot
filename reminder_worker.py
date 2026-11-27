@@ -6,9 +6,9 @@ from zoneinfo import ZoneInfo
 
 import requests
 
-from ai_assistant import AIError, organize_class_feedback
 from scheduler import get_due_events, get_due_study_checkins, get_due_study_reminders
-from storage import DataError, data_path, load_json, update_feedback_analysis, update_json
+from line_study_ai import study_start_message
+from storage import DataError, data_path, load_json, update_json
 
 
 TZ = ZoneInfo("Asia/Taipei")
@@ -42,8 +42,10 @@ def _reserve_reminder(reminder: dict) -> dict:
     result: dict = {}
 
     def update(rows: list) -> list:
-        existing = next((row for row in rows
-                         if row.get("reminder_id") == reminder["reminder_id"]), None)
+        matches = [row for row in rows if row.get("reminder_id") == reminder["reminder_id"]]
+        if len(matches) > 1 or any(row.get("user_id") != reminder.get("user_id") for row in matches):
+            raise DataError("提醒識別碼與所有者衝突")
+        existing = matches[0] if matches else None
         if existing:
             key = existing.get("retry_key") or reminder.get("retry_key") or str(uuid.uuid4())
             result.update({**existing, "retry_key": key})
@@ -58,69 +60,21 @@ def _reserve_reminder(reminder: dict) -> dict:
     return result
 
 
-def _mark_reminder(reminder_id: str, status: str, sent_at: str) -> None:
+def _mark_reminder(reminder_id: str, status: str, sent_at: str, user_id: str) -> None:
     """只更新目標提醒的送出狀態，不覆寫其他 Worker 的資料。"""
     def update(rows: list) -> list:
         return [{**row, "status": status, "sent_at": sent_at}
-                if row.get("reminder_id") == reminder_id else row for row in rows]
+                if row.get("reminder_id") == reminder_id and row.get("user_id") == user_id else row for row in rows]
     update_json(data_path("reminders"), update)
 
 
-def _mark_unscheduled_alerted(alert_id: str) -> None:
+def _mark_unscheduled_alerted(alert_id: str, user_id: str) -> None:
     def update(rows: list) -> list:
         for row in rows:
-            if row.get("unscheduled_alert_id") == alert_id:
+            if row.get("unscheduled_alert_id") == alert_id and row.get("user_id") == user_id:
                 row["unscheduled_alerted"] = True
         return rows
     update_json(data_path("plan"), update)
-
-
-def _study_session_message(task: dict, user: dict, feedbacks: list[dict]) -> str:
-    subject = task.get("subject") or "未指定科目"
-    title = task.get("title") or task.get("task_id", "")
-    text = f"讀書時段開始囉！任務：科目「{subject}」，{title}，請開始完成。"
-    feedback_id = task.get("source_feedback_id")
-    if user.get("ai_after_class_enabled") is not True or not feedback_id:
-        return text
-
-    feedback = next(
-        (
-            row for row in feedbacks
-            if row.get("feedback_id") == feedback_id
-            and row.get("user_id") == task.get("user_id")
-        ),
-        None,
-    )
-    if not feedback:
-        return text + "\n找不到這項任務關聯的課後筆記，請到 ClassPulse 筆記庫查看。"
-
-    analysis = feedback.get("ai_analysis")
-    if not isinstance(analysis, dict):
-        try:
-            analysis = organize_class_feedback(feedback, subject)
-        except AIError as exc:
-            return text + f"\nAI 筆記整理未完成：{exc}；原始筆記仍保存在筆記庫。"
-        try:
-            update_feedback_analysis(feedback_id, task["user_id"], analysis)
-        except DataError as exc:
-            return text + f"\nAI 整理結果未能保存：{exc}；原始筆記仍保存在筆記庫。"
-
-    lines = [text, "AI 根據課後筆記整理的複習內容：", f"摘要：{analysis['summary']}"]
-    if analysis.get("key_points"):
-        lines.append("重點：")
-        lines.extend(f"・{point}" for point in analysis["key_points"])
-    if analysis.get("unresolved_questions"):
-        lines.append("待釐清：")
-        lines.extend(f"・{question}" for question in analysis["unresolved_questions"])
-    if analysis.get("topic_tags"):
-        lines.append("主題：" + "、".join(analysis["topic_tags"]))
-    if analysis.get("suggested_task"):
-        lines.append(
-            f"AI 複習建議：{analysis['suggested_task']}（AI 參考時長 "
-            f"{analysis['estimated_minutes']} 分鐘；本次排程依你設定的 "
-            f"{task['estimated_minutes']} 分鐘）"
-        )
-    return "\n".join(lines)
 
 
 def run_reminder_worker_once(now: datetime | None = None) -> list[dict]:
@@ -137,28 +91,28 @@ def run_reminder_worker_once(now: datetime | None = None) -> list[dict]:
     due = get_due_events(events, now, reminders)
     due.extend(get_due_study_reminders(tasks, plan, availability, users, now, reminders))
     due.extend(get_due_study_checkins(tasks, plan, availability, users, now, reminders))
-    task_map = {task["task_id"]: task for task in tasks}
+    task_map = {(task.get("user_id"), task["task_id"]): task for task in tasks}
     user_map = {user["user_id"]: user for user in users}
-    event_map = {event["event_id"]: event for event in events}
-    existing_ids = {row.get("reminder_id") for row in reminders}
+    existing_ids = {(row.get("user_id"), row.get("reminder_id")) for row in reminders}
 
     for row in plan:
         if row.get("status") != "unscheduled" or row.get("unscheduled_alerted"):
             continue
-        task = task_map.get(row.get("task_id"))
+        task = task_map.get((row.get("user_id"), row.get("task_id")))
         user = user_map.get(task.get("user_id")) if task else None
         if (
             not task
             or not user
             or not user.get("line_user_id")
+            or user.get("demo_status") in ("pending_seed", "seeded_pending_auth")
             or not user.get("reminders_enabled", False)
         ):
             continue
         alert_id = row.get("unscheduled_alert_id") or f"unscheduled_{row['task_id']}"
-        if alert_id in existing_ids:
-            existing = next(item for item in reminders if item.get("reminder_id") == alert_id)
+        if (task["user_id"], alert_id) in existing_ids:
+            existing = next(item for item in reminders if item.get("reminder_id") == alert_id and item.get("user_id") == task["user_id"])
             if existing.get("status") == "sent":
-                _mark_unscheduled_alerted(alert_id)
+                _mark_unscheduled_alerted(alert_id, task["user_id"])
                 continue
             due.append(dict(existing))
         else:
@@ -183,28 +137,34 @@ def run_reminder_worker_once(now: datetime | None = None) -> list[dict]:
         if (
             not user
             or not user.get("line_user_id")
+            or user.get("demo_status") in ("pending_seed", "seeded_pending_auth")
             or (
                 reminder["kind"] in {"class_feedback", "unscheduled_alert"}
                 and not user.get("reminders_enabled", False)
             )
         ):
             continue
-        saved = _reserve_reminder({**reminder, "status": "pending"})
+        if reminder["kind"] != "class_feedback" and (reminder["user_id"], reminder.get("task_id")) not in task_map:
+            continue
+        if reminder["kind"] in {"study_session", "study_session_checkin"} and not user.get("study_reminders_enabled", False):
+            continue
+        try:
+            saved = _reserve_reminder({**reminder, "status": "pending"})
+        except DataError:
+            continue
         if saved.get("status") == "sent":
             continue
 
         if reminder["kind"] == "class_feedback":
-            course = event_map.get(reminder["event_id"], {})
-            course_title = course.get("title") or "課程"
             text = (
-                f"「{course_title}」課程已結束！請在 LINE 輸入「補筆記」，"
+                f"課後回饋時間到囉！科目：{next((e.get('title', '') for e in events if e.get('user_id') == reminder['user_id'] and e.get('event_id') == reminder['event_id']), '課程')}。請在 LINE 輸入「補筆記」，"
                 "回報本堂理解進度並記錄學習重點與疑問。"
             )
         elif reminder["kind"] == "study_session":
-            task = task_map.get(reminder["task_id"], {})
-            text = _study_session_message(task, user, feedbacks)
+            task = task_map.get((reminder["user_id"], reminder["task_id"]), {})
+            text = study_start_message(task, user, feedbacks)
         elif reminder["kind"] == "study_session_checkin":
-            task = task_map.get(reminder["task_id"], {})
+            task = task_map.get((reminder["user_id"], reminder["task_id"]), {})
             task_id = reminder["task_id"]
             text = (
                 f"讀書時段結束囉！任務：{task.get('title', task_id)}。"
@@ -212,13 +172,13 @@ def run_reminder_worker_once(now: datetime | None = None) -> list[dict]:
                 "若未完成，接著輸入剩餘所需分鐘數。"
             )
         else:
-            task = task_map.get(reminder["task_id"], {})
+            task = task_map.get((reminder["user_id"], reminder["task_id"]), {})
             subject = task.get("subject") or "未指定科目"
             title = task.get("title") or reminder["task_id"]
             text = (
                 f"提醒：科目「{subject}」，任務「{title}」尚未排入。原因："
             )
-            plan_row = next((p for p in plan if p.get("task_id") == reminder["task_id"]), {})
+            plan_row = next((p for p in plan if p.get("task_id") == reminder["task_id"] and p.get("user_id") == reminder["user_id"]), {})
             text += plan_row.get("reason", "請在 ClassPulse 調整時段或期限。")
 
         accepted = False
@@ -231,9 +191,9 @@ def run_reminder_worker_once(now: datetime | None = None) -> list[dict]:
             sent_at = ""
             print(f"LINE Push 失敗，將以相同 retry key 重試：{exc}")
 
-        _mark_reminder(saved["reminder_id"], status, sent_at)
+        _mark_reminder(saved["reminder_id"], status, sent_at, reminder["user_id"])
         if accepted and reminder["kind"] == "unscheduled_alert":
-            _mark_unscheduled_alerted(reminder["reminder_id"])
+            _mark_unscheduled_alerted(reminder["reminder_id"], reminder["user_id"])
         attempted.append({**saved, "status": status, "sent_at": sent_at})
     return attempted
 

@@ -29,6 +29,10 @@ FILES = {
     "plan": "plan.json", "users": "users.json", "reminders": "reminders.json",
     "feedback": "feedback.json", "pending_notes": "pending_notes.json",
     "processed_webhooks": "processed_webhooks.json",
+    "external_events": "external_events.json",
+    "preference_targets": "preference_targets.json",
+    "semester_settings": "semester_settings.json",
+    "web_auth": "web_auth.json",
 }
 TZ = ZoneInfo("Asia/Taipei")
 
@@ -168,6 +172,16 @@ def validate_task(task: dict) -> dict:
         raise DataError("Deadline 日期格式錯誤") from exc
     if type(task.get("estimated_minutes")) is not int or task["estimated_minutes"] <= 0:
         raise DataError("預估時間必須是正整數分鐘")
+    deadline_at=task.get("deadline_at")
+    if deadline_at:
+        try:
+            moment=datetime.fromisoformat(deadline_at)
+            if moment.tzinfo is None or moment.date().isoformat()!=task["deadline"]:
+                raise ValueError
+        except (ValueError, TypeError) as exc:
+            raise DataError("精確 Deadline 須帶時區且日期與 deadline 一致") from exc
+    if task.get("source_question_key") and not isinstance(task.get("source_question_key"),str):
+        raise DataError("來源疑問識別碼格式錯誤")
     remaining = task.get("remaining_minutes")
     if remaining is not None and (type(remaining) is not int or remaining <= 0):
         raise DataError("剩餘時間必須是正整數分鐘")
@@ -200,10 +214,10 @@ def validate_availability(slot: dict, existing: list | None = None) -> dict:
     ):
         raise DataError("MVP 不支援跨午夜時段")
     for old in existing or []:
-        if old.get("user_id") != slot["user_id"] or old.get("date") != slot["date"]:
-            continue
         if old.get("availability_id") == slot["availability_id"]:
             raise DataError("時段 ID 已存在")
+        if old.get("user_id") != slot["user_id"] or old.get("date") != slot["date"]:
+            continue
         old_begin = datetime.combine(selected_date, _clock(old["start_time"]))
         old_end = old_begin + timedelta(minutes=old["available_minutes"])
         if beginning < old_end and old_begin < ending:
@@ -224,10 +238,10 @@ def update_event(event: dict) -> list:
     validate_event(event)
 
     def change(items: list) -> list:
-        if not any(row.get("event_id") == event["event_id"] for row in items):
+        if not any(row.get("event_id") == event["event_id"] and row.get("user_id") == event["user_id"] for row in items):
             raise DataError("找不到要修改的課程，請重新整理後再試")
         return [
-            event if row.get("event_id") == event["event_id"] else row
+            event if row.get("event_id") == event["event_id"] and row.get("user_id") == event["user_id"] else row
             for row in items
         ]
     return update_json(data_path("events"), change)
@@ -386,8 +400,20 @@ def update_task_status(tasks: list, task_id: str, status: str) -> list:
     return [{**item, "status": status} if item.get("task_id") == task_id else item for item in tasks]
 
 
-def set_task_status(task_id: str, status: str) -> list:
-    return update_json(data_path("tasks"), lambda items: update_task_status(items, task_id, status))
+def set_task_status(task_id: str, status: str, user_id: str) -> list:
+    """Persist status changes only for a server-resolved owner."""
+    if not user_id or status not in ("pending", "completed"):
+        raise DataError("任務狀態或所有者不正確")
+
+    def change(items):
+        if not any(row.get("task_id") == task_id and row.get("user_id") == user_id for row in items):
+            raise DataError("找不到指定任務")
+        return [
+            {**row, "status": status}
+            if row.get("task_id") == task_id and row.get("user_id") == user_id else row
+            for row in items
+        ]
+    return update_json(data_path("tasks"), change)
 
 
 def validate_feedback(feedback: dict) -> dict:

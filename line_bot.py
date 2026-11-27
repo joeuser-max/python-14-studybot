@@ -1,35 +1,33 @@
 import base64
 import hashlib
 import hmac
-from io import BytesIO
 import json
 import os
-import re
-import xml.etree.ElementTree as ET
-import zipfile
+
+from line_demo_registration import get_or_create_line_user, is_valid_line_user_id
+from line_demo_seed import SEEDED_STATUS, seed_line_user
+from line_web_auth import install_routes
+from line_note_files import clean_filename, download_line_file, extract_text
+from note_attachments import save_pdf_attachment
+from note_tasks import extract_questions, candidate_tasks, confirm_question_task, next_class_start
 from datetime import date, datetime, timedelta
-from urllib.parse import quote
 from zoneinfo import ZoneInfo
 
 import requests
-from pypdf import PdfReader
-from pypdf.errors import PdfReadError
 from flask import Flask, abort, request
 
-from plan_bridge import merge_user_plan, normalize_plan_result
-from scheduler import make_plan
+from ai_assistant import AIError, organize_class_feedback
 from storage import (
     DataError,
     add_task_to_storage,
     create_id,
     data_path,
-    delete_feedback_attachment,
     load_json,
     record_task_progress,
     save_feedback as storage_save_feedback,
-    save_feedback_attachment,
+    search_learning_notes,
+    update_feedback_analysis,
     update_json,
-    update_task,
 )
 
 
@@ -45,12 +43,18 @@ WEEKDAYS = {
 }
 WEEKDAY_CHOICES = ["週一", "週二", "週三", "週四", "週五", "週六", "週日"]
 PROGRESS_CHOICES = ["1", "2", "3", "4", "5"]
+PROGRESS_LABELS = {
+    1: "目前還不太理解",
+    2: "大部分還不熟悉",
+    3: "部分理解，仍有疑問",
+    4: "大致理解，少數地方需複習",
+    5: "很有把握",
+}
+AI_TASK_ACCEPT = "加入讀書任務"
 AI_TASK_SKIP = "先不用"
 DEMO_USER_ID = "demo_user_001"
-MAX_NOTE_FILE_BYTES = 10 * 1024 * 1024
-MAX_NOTE_DOCX_EXPANDED_BYTES = 20 * 1024 * 1024
-MAX_NOTE_CONTENT_CHARS = 50_000
-LINE_FILE_CONTENT_URL = "https://api-data.line.me/v2/bot/message/{}/content"
+PENDING_DEMO_REPLY = "你的 ClassPulse 帳號已建立，個人 Demo 資料尚未準備完成；目前暫不開放筆記、任務或 AI 功能。"
+SEEDED_DEMO_REPLY = "你的個人虛構 Demo 資料已建立，尚待網頁身份驗證與安全驗收；目前暫不開放筆記、任務或 AI 功能。"
 
 
 def verify_line_signature(body: bytes, signature: str, secret: str) -> bool:
@@ -176,133 +180,83 @@ def _remove_pending(user_id: str) -> None:
     )
 
 
-def _download_line_file(message_id: str, file_size: object) -> bytes:
-    if not isinstance(message_id, str) or not message_id:
-        raise DataError("LINE 檔案訊息缺少檔案 ID，請重新上傳")
-    if type(file_size) is int and file_size > MAX_NOTE_FILE_BYTES:
-        raise DataError("檔案超過 10 MB，請縮小檔案後重新上傳")
-    token = os.getenv("LINE_CHANNEL_ACCESS_TOKEN", "")
-    if not token:
-        raise DataError("尚未設定 LINE_CHANNEL_ACCESS_TOKEN，無法下載檔案")
+def _save_quick_note(event: dict, user_id: str, now: datetime, text: str) -> dict:
+    """LINE-first 快速收件箱：不用重選課次、不猜測筆記科目。
 
-    url = LINE_FILE_CONTENT_URL.format(quote(message_id, safe=""))
-    chunks = []
-    total_size = 0
-    with requests.get(
-        url,
-        headers={"Authorization": f"Bearer {token}"},
-        stream=True,
-        timeout=(5, 20),
-    ) as response:
-        response.raise_for_status()
-        for chunk in response.iter_content(chunk_size=64 * 1024):
-            if not chunk:
-                continue
-            total_size += len(chunk)
-            if total_size > MAX_NOTE_FILE_BYTES:
-                raise DataError("檔案超過 10 MB，請縮小檔案後重新上傳")
-            chunks.append(chunk)
-    if not chunks:
-        raise DataError("收到的檔案是空的，請重新上傳")
-    return b"".join(chunks)
+    課程歸屬可到 V2 中控台確認；不自動產生排程或呼叫第三方模型。
+    """
+    note = text.strip()
+    if not 2 <= len(note) <= 50_000:
+        raise DataError("筆記應有 2–50,000 字")
+    feedback = {
+        "feedback_id": create_id("feedback"), "user_id": user_id,
+        "event_id": "inbox", "class_date": now.date().isoformat(),
+        "received_at": now.isoformat(timespec="seconds"),
+        "content": note, "progress": None, "topic_tags": [],
+        "source": "selected", "reminder_id": "",
+        "webhook_event_id": event.get("webhookEventId",""),
+        "attachment_filename": event.get("_attachment_filename", ""),
+    }
+    result = save_feedback(feedback)
+    if result["error"]:
+        raise DataError(result["error"])
+    if result["saved"] and event.get("_attachment_content") is not None:
+        save_pdf_attachment(user_id, feedback["feedback_id"], event["_attachment_content"])
+    return {**result, "feedback_id": feedback["feedback_id"]}
 
 
-def _extract_note_file(filename: str, content: bytes) -> str:
-    extension = filename.rpartition(".")[2].lower()
-    if extension == "txt":
-        try:
-            text = content.decode("utf-8-sig")
-        except UnicodeDecodeError as exc:
-            raise DataError("TXT 檔案需使用 UTF-8 編碼") from exc
-    elif extension == "pdf":
-        try:
-            reader = PdfReader(BytesIO(content))
-            if reader.is_encrypted:
-                raise DataError("加密的 PDF 無法匯入，請解除密碼後重新上傳")
-            pages = []
-            total_chars = 0
-            for page in reader.pages:
-                page_text = page.extract_text() or ""
-                total_chars += len(page_text)
-                if total_chars > MAX_NOTE_CONTENT_CHARS:
-                    raise DataError("擷取的筆記超過 50,000 字，請拆分檔案後重新上傳")
-                if page_text:
-                    pages.append(page_text)
-        except PdfReadError as exc:
-            raise DataError("無法讀取此 PDF，請確認它是有效且未損壞的檔案") from exc
-        text = "\n".join(pages)
-    elif extension == "docx":
-        try:
-            with zipfile.ZipFile(BytesIO(content)) as archive:
-                entries = archive.infolist()
-                if sum(entry.file_size for entry in entries) > MAX_NOTE_DOCX_EXPANDED_BYTES:
-                    raise DataError("Word 檔解壓後大小超過 20 MB，無法匯入")
-                document = archive.getinfo("word/document.xml")
-                if document.file_size > MAX_NOTE_DOCX_EXPANDED_BYTES:
-                    raise DataError("Word 文件內容超過可匯入大小")
-                with archive.open(document) as document_stream:
-                    document_xml = document_stream.read(MAX_NOTE_DOCX_EXPANDED_BYTES + 1)
-                if len(document_xml) > MAX_NOTE_DOCX_EXPANDED_BYTES:
-                    raise DataError("Word 文件內容超過可匯入大小")
-                root = ET.fromstring(document_xml)
-        except (KeyError, zipfile.BadZipFile, ET.ParseError) as exc:
-            raise DataError("無法讀取此 Word 檔，請確認它是有效的 .docx 文件") from exc
-
-        word_namespace = "{http://schemas.openxmlformats.org/wordprocessingml/2006/main}"
-        paragraphs = []
-        for paragraph in root.iter(f"{word_namespace}p"):
-            paragraph_text = "".join(
-                node.text or "" for node in paragraph.iter(f"{word_namespace}t")
-            )
-            if paragraph_text:
-                paragraphs.append(paragraph_text)
-        text = "\n".join(paragraphs)
-    else:
-        raise DataError("目前支援 .docx、.pdf 與 .txt 筆記檔，請轉換格式後重新上傳")
-
-    text = text.strip()
-    if len(text) > MAX_NOTE_CONTENT_CHARS:
-        raise DataError("擷取的筆記超過 50,000 字，請拆分檔案後重新上傳")
-    if len(text) < 2:
-        raise DataError("檔案中找不到足夠的文字內容，請確認文件有可讀文字")
-    return text
+def _notes_reply(user_id: str, query: str = "") -> str:
+    all_notes = load_json(data_path("feedback"))
+    # LINE 自然語言查詢須包含筆記全文與主題標籤，不能套用
+    # V2「只依標籤搜尋」的網頁舊邏輯。
+    owned = [n for n in all_notes if n.get("user_id") == user_id]
+    needle = query.strip().casefold()
+    matched = [
+        n for n in owned
+        if not needle or needle in str(n.get("content") or "").casefold()
+        or any(needle in str(tag).casefold() for tag in
+               (n.get("topic_tags") if isinstance(n.get("topic_tags"), list) else []))
+    ]
+    if not matched:
+        return "找不到符合條件的筆記；可以傳送「筆記 內容」、PDF、DOCX 或 TXT 新增。"
+    events = {e.get("event_id"): e.get("title", "課堂") for e in load_json(data_path("events"))
+              if e.get("user_id") == user_id}
+    recent = sorted(matched,key=lambda n:n.get("received_at",""),reverse=True)[:5]
+    sections=[]
+    for item in recent:
+        title=events.get(item.get("event_id"), "未分類筆記")
+        excerpt=" ".join(str(item.get("content") or "").split())[:220]
+        date_text=item.get("class_date") or item.get("received_at","")[:10]
+        sections.append(f"{date_text}｜{title}\n{excerpt}")
+    return "最近筆記" + (f"（搜尋：{query}）" if query else "") + "：\n\n" + "\n\n".join(sections)
 
 
 def _handle_file_event(event: dict, user: dict, now: datetime) -> bool:
-    reply_token = event.get("replyToken", "")
-    message = event.get("message", {})
-    pending = _pending_for(user["user_id"], now)
-    if not pending or pending.get("stage") != "note":
-        reply_line_message(reply_token, "請先進入「補筆記」的筆記輸入步驟，再上傳 .docx、.pdf 或 .txt 檔案。")
-        return True
-
-    filename = message.get("fileName", "")
-    if not isinstance(filename, str):
-        reply_line_message(reply_token, "無法辨識檔案名稱，請重新上傳 .docx、.pdf 或 .txt。")
-        return True
-    safe_filename = re.sub(r"[\x00-\x1f\x7f]", "", filename)
-    safe_filename = safe_filename.replace("\\", "/").rsplit("/", 1)[-1].strip()[:255]
-    if safe_filename.rpartition(".")[2].lower() not in {"docx", "pdf", "txt"}:
-        reply_line_message(reply_token, "目前支援 .docx、.pdf 與 .txt 筆記檔，請轉換格式後重新上傳")
-        return True
+    """Only the verified Webhook may download LINE files (never unsigned URLs)."""
+    reply_token=event.get("replyToken","")
+    message=event.get("message") or {}
     try:
-        content = _download_line_file(message.get("id", ""), message.get("fileSize"))
-        extracted_text = _extract_note_file(safe_filename, content)
+        name=clean_filename(message.get("fileName",""))
+        raw=download_line_file(message.get("id",""),message.get("fileSize"))
+        text=extract_text(name,raw)
     except DataError as exc:
-        reply_line_message(reply_token, str(exc))
+        reply_line_message(reply_token,str(exc))
         return True
     except requests.RequestException:
-        reply_line_message(reply_token, "無法從 LINE 下載檔案，請確認連線後重新上傳。")
+        reply_line_message(reply_token,"無法從 LINE 下載檔案，請稍後再傳")
         return True
-
-    text_event = {
+    pending=_pending_for(user["user_id"],now)
+    if pending and pending.get("stage")!="note":
+        reply_line_message(reply_token,"目前正在填寫其他資訊，請完成或輸入「取消」再傳筆記")
+        return True
+    synthetic={
         **event,
-        "message": {**message, "type": "text", "text": extracted_text},
-        "_attachment_filename": safe_filename,
+        "message":{**message,"type":"text","text":text if pending else "筆記 "+text},
+        "_attachment_filename":name,
     }
-    if safe_filename.lower().endswith(".pdf"):
-        text_event["_attachment_content"] = content
-    return _handle_text_event(text_event, user, now) is not False
+    if name.lower().endswith(".pdf"):
+        synthetic["_attachment_content"]=raw
+    return _handle_text_event(synthetic,user,now) is not False
 
 
 def _mark_processed(webhook_event_id: str, received_at: datetime) -> None:
@@ -320,6 +274,9 @@ def _mark_processed(webhook_event_id: str, received_at: datetime) -> None:
 
 def _bind_demo_user(line_user_id: str) -> None:
     def bind(rows: list) -> list:
+        if any(row.get("line_user_id") == line_user_id
+               and row.get("user_id") != DEMO_USER_ID for row in rows):
+            raise DataError("此 LINE 帳號已有獨立 ClassPulse 帳號，不可重新綁定示範帳號")
         user = next((row for row in rows if row.get("user_id") == DEMO_USER_ID), None)
         if user:
             already_bound = user.get("line_user_id")
@@ -342,7 +299,7 @@ def _bind_demo_user(line_user_id: str) -> None:
 
 def _find_class_reminder(user_id: str, event_id: str, class_date: str) -> str:
     reminders = load_json(data_path("reminders"))
-    matching = [
+    matches = [
         item for item in reminders
         if item.get("kind") == "class_feedback"
         and item.get("status") == "sent"
@@ -350,8 +307,13 @@ def _find_class_reminder(user_id: str, event_id: str, class_date: str) -> str:
         and item.get("event_id") == event_id
         and item.get("class_date") == class_date
     ]
-    row = max(matching, key=lambda item: item.get("scheduled_at", ""), default=None)
-    return row.get("reminder_id", "") if row else ""
+    if not matches:
+        return ""
+    row = max(matches, key=lambda r: (
+        r.get("scheduled_at") or "",
+        r.get("sent_at") or "",
+    ))
+    return row.get("reminder_id", "")
 
 
 def _update_checkin(
@@ -415,20 +377,32 @@ def _select_checkin(
     return None, command
 
 
-def _replan_user_tasks(user_id: str, now: datetime) -> list[dict]:
-    tasks = load_json(data_path("tasks"))
-    availability = load_json(data_path("availability"))
-    previous_plan = load_json(data_path("plan"))
-    own_tasks = [row for row in tasks if row.get("user_id") == user_id]
-    own_slots = [row for row in availability if row.get("user_id") == user_id]
-    own_plan = [row for row in previous_plan if row.get("user_id") == user_id]
-    plan_result = make_plan(own_tasks, own_slots, own_plan, now)
-    new_plan = normalize_plan_result(plan_result, user_id)
-    update_json(
-        data_path("plan"),
-        lambda rows: merge_user_plan(rows, user_id, new_plan),
+def _visual_board_enabled(user_id: str, availability: list[dict]) -> bool:
+    return any(row.get("user_id") == user_id and row.get("board_generated")
+               for row in availability)
+
+
+def _replan_user_tasks(user_id: str, now: datetime,
+                       changed_task_id: str = "") -> list[dict]:
+    """V2-only：LINE 回報時只調整被回報的任務。
+
+    不使用 legacy make_plan 全表重排；無論有沒有 board_generated
+    既有時段，都不得把其他任務移動。
+    """
+    if not changed_task_id:
+        return [row for row in load_json(data_path("plan"))
+                if row.get("user_id") == user_id]
+    from week_planner import unplace, fill_remaining
+    unplace(user_id, changed_task_id)
+    task = next(
+        (row for row in load_json(data_path("tasks"))
+         if row.get("user_id") == user_id and row.get("task_id") == changed_task_id),
+        None,
     )
-    return new_plan
+    if task and task.get("status") == "pending":
+        outcome = fill_remaining(user_id, now, only_task_ids={changed_task_id})
+        return outcome["placed"]
+    return []
 
 
 def _handle_study_checkin(event: dict, user: dict) -> bool | None:
@@ -485,7 +459,7 @@ def _handle_study_checkin(event: dict, user: dict) -> bool | None:
                 remaining_minutes=minutes,
                 previous_availability_id=selected.get("availability_id", ""),
             )
-            plan = _replan_user_tasks(user_id, datetime.now(TZ))
+            plan = _replan_user_tasks(user_id, datetime.now(TZ), selected["task_id"])
         except (DataError, ValueError) as exc:
             reply_line_message(reply_token, f"剩餘進度未能重新安排：{exc}")
             return False
@@ -555,7 +529,7 @@ def _handle_study_checkin(event: dict, user: dict) -> bool | None:
                     completed=True,
                     previous_availability_id=selected.get("availability_id", ""),
                 )
-                _replan_user_tasks(user_id, datetime.now(TZ))
+                _replan_user_tasks(user_id, datetime.now(TZ), selected["task_id"])
             except (DataError, ValueError) as exc:
                 reply_line_message(reply_token, f"完成狀態未能更新：{exc}")
                 return False
@@ -581,214 +555,63 @@ def _handle_study_checkin(event: dict, user: dict) -> bool | None:
     return None
 
 
-def _note_task_draft(user_id: str, pending: dict, availability_id: str) -> dict:
-    return {
-        "task_id": pending["task_id"],
-        "user_id": user_id,
-        "subject": pending["course_title"],
-        "title": pending["task_title"],
-        "deadline": pending["deadline"],
-        "estimated_minutes": pending["study_minutes"],
-        "status": "pending",
-        "preferred_availability_id": availability_id,
-        "source_feedback_id": pending["feedback_id"],
-        "source_event_id": pending["event_id"],
-        "source_class_date": pending["class_date"],
-        "reading_progress": pending["reading_progress"],
-        "source": pending.get("task_source", "note_confirmed"),
-    }
-
-
-def _preview_note_task_plan(
+def _schedule_confirmed_ai_task(
     user_id: str,
     pending: dict,
-    availability_id: str,
     now: datetime,
 ) -> tuple[dict, dict]:
-    stored_tasks = load_json(data_path("tasks"))
-    existing = next(
+    tasks = load_json(data_path("tasks"))
+    task = next(
         (
-            row for row in stored_tasks
+            row for row in tasks
             if row.get("user_id") == user_id
             and row.get("source_feedback_id") == pending["feedback_id"]
+            and row.get("source") == "ai_confirmed"
         ),
         None,
     )
-    if existing:
-        pending["task_id"] = existing["task_id"]
-    task = _note_task_draft(user_id, pending, availability_id)
-    tasks = [
-        row for row in stored_tasks
-        if row.get("user_id") == user_id and row.get("task_id") != task["task_id"]
-    ] + [task]
-    slots = [
-        row for row in load_json(data_path("availability"))
-        if row.get("user_id") == user_id
-    ]
-    previous_plan = [
-        row for row in load_json(data_path("plan"))
-        if row.get("user_id") == user_id
-    ]
-    plan_result = make_plan(tasks, slots, previous_plan, now)
-    plan = normalize_plan_result(plan_result, user_id)
-    task_plan = next(
-        (row for row in plan if row.get("task_id") == task["task_id"]),
-        {},
-    )
-    return task, task_plan
-
-
-def _available_note_task_slots(
-    user_id: str,
-    pending: dict,
-    now: datetime,
-) -> list[dict]:
-    available = [
-        row for row in load_json(data_path("availability"))
-        if row.get("user_id") == user_id
-    ]
-    options = []
-    for slot in sorted(
-        available,
-        key=lambda row: (row.get("date", ""), row.get("start_time", "")),
-    ):
-        _, plan_row = _preview_note_task_plan(
-            user_id,
-            pending,
-            slot.get("availability_id", ""),
-            now,
-        )
-        if (
-            plan_row.get("status") == "scheduled"
-            and plan_row.get("availability_id") == slot.get("availability_id")
-        ):
-            options.append({
-                "availability_id": slot["availability_id"],
-                "date": slot["date"],
-                "start_time": slot["start_time"],
-                "available_minutes": slot["available_minutes"],
-            })
-    return options
-
-
-def _study_slot_prompt(options: list[dict], minutes: int) -> tuple[str, list[str]]:
-    details = "\n".join(
-        f"{index}. {slot['date']} {slot['start_time']}（可用 {slot['available_minutes']} 分鐘）"
-        for index, slot in enumerate(options, 1)
-    )
-    return (
-        f"請選擇你決定要讀書的時段（任務預估 {minutes} 分鐘）：\n{details}\n"
-        "請回覆時段編號；若要放棄新增任務，請輸入「先不用」。",
-        [str(index) for index in range(1, min(len(options), 13) + 1)],
-    )
-
-
-def _request_manual_note_task(
-    reply_token: str,
-    pending: dict,
-    feedback: dict,
-    course_title: str,
-    now: datetime,
-    prefix: str = "",
-) -> None:
-    pending.update({
-        "feedback_id": feedback["feedback_id"],
-        "course_title": course_title,
-        "task_source": "note_confirmed",
-        "expires_at": (now + timedelta(minutes=10)).isoformat(timespec="seconds"),
-    })
-    reading_progress = pending.get("course_progress", "").strip()
-    if reading_progress and len(reading_progress) <= 120:
-        pending.update({
-            "stage": "study_minutes",
-            "task_title": f"複習 {reading_progress}",
+    if task is None:
+        course=next((c for c in load_json(data_path("events"))
+                     if c.get("user_id")==user_id and c.get("event_id")==pending.get("event_id")),None)
+        next_start=next_class_start(course,now) if course else None
+        deadline = next_start.date().isoformat() if next_start else (now.date()+timedelta(days=7)).isoformat()
+        task = {
             "task_id": create_id("task"),
-            "reading_progress": reading_progress,
-        })
-        _set_pending(pending)
-        reply_line_message(
-            reply_token,
-            prefix
-            + f"已使用你回報的進度範圍「{reading_progress}」建立讀書任務草稿。"
-            "請輸入你決定要花多少分鐘讀；若不新增任務，請回覆「先不用」。",
-            [AI_TASK_SKIP],
-        )
-        return
-    _set_pending(pending)
-    _request_note_task_reading_range(reply_token, pending, now, prefix)
-
-
-def _request_note_task_reading_range(
-    reply_token: str,
-    pending: dict,
-    now: datetime,
-    prefix: str = "",
-) -> None:
-    pending.update({
-        "stage": "task_reading_range",
-        "expires_at": (now + timedelta(minutes=10)).isoformat(timespec="seconds"),
-    })
-    _set_pending(pending)
-    reply_line_message(
-        reply_token,
-        prefix
-        + "目前沒有提供上課進度。若要安排讀書任務，請輸入本次要讀的範圍，"
-        "例如「Ch.3 p.20–30」或「Ch.3 全章」；若不新增任務，請回覆「先不用」。",
-        [AI_TASK_SKIP],
-    )
-
-
-def _save_note_task(
-    user_id: str,
-    pending: dict,
-    now: datetime,
-) -> tuple[dict, dict]:
-    task, task_plan = _preview_note_task_plan(
-        user_id,
-        pending,
-        pending["selected_availability_id"],
-        now,
-    )
-    if (
-        task_plan.get("status") != "scheduled"
-        or task_plan.get("availability_id") != pending["selected_availability_id"]
-    ):
-        return task, task_plan
-
-    existing = next(
-        (
-            row for row in load_json(data_path("tasks"))
-            if row.get("user_id") == user_id
-            and row.get("task_id") == task["task_id"]
-        ),
-        None,
-    )
-    if existing:
-        update_task(task)
-    else:
+            "user_id": user_id,
+            "subject": pending["course_title"],
+            "title": pending["suggested_task"],
+            "deadline": deadline,
+            "estimated_minutes": 30,
+            **({"deadline_at":next_start.isoformat(timespec="minutes")} if next_start else {}),
+            "status": "pending",
+            "preferred_availability_id": "",
+            "source_feedback_id": pending["feedback_id"],
+            "source_event_id": pending["event_id"],
+            "source_class_date": pending["class_date"],
+            "source": "ai_confirmed",
+        }
         add_task_to_storage(task)
-    tasks = [
-        row for row in load_json(data_path("tasks"))
-        if row.get("user_id") == user_id
+        tasks = load_json(data_path("tasks"))
+
+    # LINE 接受 AI 建議只建立待排任務；V2 的拖排／偏好畫筆
+    # 必須由使用者在 Streamlit 中控台明確確認。
+    return task, {}
+
+
+def _format_class_feedback_analysis(analysis: dict, progress: int) -> str:
+    lines = [
+        f"AI 已整理這堂課（你的自評：{progress}/5｜{PROGRESS_LABELS[progress]}）",
+        f"摘要：{analysis['summary']}",
     ]
-    slots = [
-        row for row in load_json(data_path("availability"))
-        if row.get("user_id") == user_id
-    ]
-    previous_plan = [
-        row for row in load_json(data_path("plan"))
-        if row.get("user_id") == user_id
-    ]
-    plan_result = make_plan(tasks, slots, previous_plan, now)
-    plan = normalize_plan_result(plan_result, user_id)
-    update_json(
-        data_path("plan"),
-        lambda rows: merge_user_plan(rows, user_id, plan),
-    )
-    return task, next(
-        (row for row in plan if row.get("task_id") == task["task_id"]),
-        {},
-    )
+    if analysis["key_points"]:
+        lines.append("課堂重點：")
+        lines.extend(f"・{point}" for point in analysis["key_points"])
+    if analysis["unresolved_questions"]:
+        lines.append("待釐清：")
+        lines.extend(f"・{question}" for question in analysis["unresolved_questions"])
+    if analysis.get("topic_tags"):
+        lines.append("主題標籤：" + "、".join(analysis["topic_tags"]))
+    return "\n".join(lines)
 
 
 def _handle_text_event(event: dict, user: dict, now: datetime) -> bool | None:
@@ -796,14 +619,34 @@ def _handle_text_event(event: dict, user: dict, now: datetime) -> bool | None:
     text = text.strip() if isinstance(text, str) else ""
     reply_token = event.get("replyToken", "")
     user_id = user["user_id"]
-    is_attachment = bool(event.get("_attachment_filename"))
-    pending = _pending_for(user_id, now)
-    if not is_attachment and not pending:
+    if not user.get("_personal_note_only"):
         checkin_result = _handle_study_checkin(event, user)
         if checkin_result is not None:
             return checkin_result
+    pending = _pending_for(user_id, now)
 
-    if not is_attachment and text == "取消":
+    # LINE-first 直接操作：查筆記與臨時筆記可略過逐欄課次引導。
+    # 仍保存來源，不把未確認的文本推定成正式課程。
+    if not pending and text in {"查看筆記", "我的筆記"}:
+        reply_line_message(reply_token, _notes_reply(user_id))
+        return
+    if not pending and text.startswith("搜尋 "):
+        reply_line_message(reply_token, _notes_reply(user_id, text[3:].strip()))
+        return
+    if not pending and text.startswith("筆記 "):
+        try:
+            saved = _save_quick_note(event,user_id,now,text[3:])
+        except DataError as exc:
+            reply_line_message(reply_token, f"筆記尚未保存：{exc}")
+            return False
+        if saved["deduplicated"]:
+            reply_line_message(reply_token,"這則筆記已存在，未重複儲存")
+        else:
+            reply_line_message(reply_token,"已存入 ClassPulse 未分類筆記庫。"
+                "稍後可在網頁歸檔；目前不會自動覆寫日曆或產生讀書任務。")
+        return
+
+    if text == "取消":
         if pending:
             _remove_pending(user_id)
             reply_line_message(reply_token, "已取消補筆記。")
@@ -811,7 +654,7 @@ def _handle_text_event(event: dict, user: dict, now: datetime) -> bool | None:
             reply_line_message(reply_token, "目前沒有待完成的補筆記流程。")
         return
 
-    if not is_attachment and text == "補筆記":
+    if text == "補筆記":
         record = {
             "user_id": user_id,
             "stage": "weekday",
@@ -821,179 +664,102 @@ def _handle_text_event(event: dict, user: dict, now: datetime) -> bool | None:
         reply_line_message(reply_token, "請選擇要補筆記的星期（流程 10 分鐘後逾時）。", WEEKDAY_CHOICES)
         return
 
-    if not pending:
-        return
-
-    if pending.get("stage") == "task_reading_range":
-        if text in {AI_TASK_SKIP, "只存筆記"}:
+    if pending and pending.get("stage") == "ai_question_confirmation":
+        choices=[AI_TASK_ACCEPT,AI_TASK_SKIP]
+        index=int(pending.get("question_index",0))
+        questions=pending.get("questions",[])
+        if index>=len(questions):
             _remove_pending(user_id)
-            reply_line_message(reply_token, "筆記已保存，未新增讀書任務。")
+            reply_line_message(reply_token,"所有疑問已處理，可至 ClassPulse 任務管理查看紫色任務。")
             return
-        if not text or len(text) > 120:
-            reply_line_message(
-                reply_token,
-                "請輸入 1 至 120 字的讀書進度範圍，例如「Ch.3 p.20–30」；"
-                "若不新增任務，請回覆「先不用」。",
-                [AI_TASK_SKIP],
+        if text not in choices:
+            reply_line_message(reply_token,
+                f"第 {index+1}/{len(questions)} 題：{questions[index]} "
+                "要新增 30 分鐘紫色任務嗎？Deadline 為下次上課前。",
+                choices)
+            return
+        if text==AI_TASK_ACCEPT:
+            notes=load_json(data_path("feedback"))
+            note=next((n for n in notes if n.get("feedback_id")==pending["feedback_id"]
+                       and n.get("user_id")==user_id),None)
+            courses=load_json(data_path("events"))
+            if note is None:
+                reply_line_message(reply_token,"來源筆記不存在，請先回到網站檢查")
+                return False
+            candidate=next(
+                (c for c in candidate_tasks([note],courses,
+                                            load_json(data_path("tasks")),user_id,now)
+                 if c["question"]==questions[index]),None,
             )
-            return
-        pending.update({
-            "reading_progress": text,
-            "task_title": pending.get("task_title") or f"複習 {text}",
-            "task_source": pending.get("task_source", "note_confirmed"),
-            "task_id": pending.get("task_id") or create_id("task"),
-            "stage": "study_minutes",
-            "expires_at": (now + timedelta(minutes=10)).isoformat(timespec="seconds"),
-        })
-        _set_pending(pending)
-        reply_line_message(
-            reply_token,
-            "請回覆你決定要花多少分鐘讀這個範圍（輸入正整數）；"
-            "接著會請你提供 Deadline，再由你選擇可行時段。",
-        )
-        return
-
-    if pending.get("stage") == "study_minutes":
-        if text in {AI_TASK_SKIP, "只存筆記"}:
-            _remove_pending(user_id)
-            reply_line_message(reply_token, "筆記已保存，未新增讀書任務。")
-            return
-        if not pending.get("reading_progress"):
-            _request_note_task_reading_range(reply_token, pending, now)
-            return
-        if not re.fullmatch(r"[0-9]+", text):
-            reply_line_message(reply_token, "讀書時長請以分鐘輸入正整數，例如 45。")
-            return
-        minutes = int(text)
-        if not 1 <= minutes <= 1440:
-            reply_line_message(reply_token, "讀書時長需介於 1 到 1440 分鐘，請輸入你決定的時長。")
-            return
-        pending["study_minutes"] = minutes
-        pending.update({
-            "stage": "study_deadline",
-            "expires_at": (now + timedelta(minutes=10)).isoformat(timespec="seconds"),
-        })
-        _set_pending(pending)
-        reply_line_message(
-            reply_token,
-            "請輸入這項讀書任務的 Deadline（YYYY-MM-DD）。"
-            "系統不會自行假設期限；輸入「先不用」可只保留筆記。",
-            [AI_TASK_SKIP],
-        )
-        return
-
-    if pending.get("stage") == "study_deadline":
-        if text in {AI_TASK_SKIP, "只存筆記"}:
-            _remove_pending(user_id)
-            reply_line_message(reply_token, "筆記已保存，未新增讀書任務。")
-            return
-        minutes_match = re.fullmatch(r"分鐘\s+([0-9]+)", text)
-        if minutes_match:
-            minutes = int(minutes_match.group(1))
-            if not 1 <= minutes <= 1440:
-                reply_line_message(reply_token, "讀書時長需介於 1 到 1440 分鐘，請輸入有效分鐘數。")
-                return
-            pending["study_minutes"] = minutes
-            pending.pop("deadline", None)
-            pending.pop("study_slot_options", None)
-            pending["expires_at"] = (now + timedelta(minutes=10)).isoformat(timespec="seconds")
+            if candidate is not None:
+                try:
+                    confirm_question_task(user_id,candidate,now)
+                except DataError as exc:
+                    reply_line_message(reply_token,f"這題尚未新增：{exc}")
+                    return False
+            # An already confirmed question may be absent from candidate_tasks.
+        index+=1
+        if index<len(questions):
+            pending["question_index"]=index
+            pending["expires_at"]=(now+timedelta(minutes=10)).isoformat(timespec="seconds")
             _set_pending(pending)
-            reply_line_message(
-                reply_token,
-                f"已更新為 {minutes} 分鐘。請輸入 Deadline（YYYY-MM-DD）重新查詢可行時段。",
-            )
-            return
-        if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", text):
-            reply_line_message(reply_token, "Deadline 格式須為 YYYY-MM-DD，例如 2026-12-10。")
-            return
-        try:
-            deadline = date.fromisoformat(text)
-        except ValueError:
-            reply_line_message(reply_token, "這不是有效日期，請重新輸入 YYYY-MM-DD 格式的 Deadline。")
-            return
-        if deadline < now.date():
-            reply_line_message(reply_token, "Deadline 不可早於今天，請重新輸入日期。")
-            return
-        pending["deadline"] = deadline.isoformat()
-        options = _available_note_task_slots(user_id, pending, now)
-        if not options:
-            pending["expires_at"] = (now + timedelta(minutes=10)).isoformat(timespec="seconds")
-            _set_pending(pending)
-            reply_line_message(
-                reply_token,
-                f"目前沒有符合 Deadline、能容納 {pending['study_minutes']} 分鐘的可行時段。"
-                "請調整 ClassPulse 的可用時段、輸入「分鐘 45」調整時長，"
-                "或輸入新的 Deadline 重新查詢；"
-                "系統不會自行拆分或安排時間。輸入「先不用」可只保留筆記。",
-            )
-            return
-        pending.update({
-            "stage": "study_slot",
-            "study_slot_options": options,
-            "expires_at": (now + timedelta(minutes=10)).isoformat(timespec="seconds"),
-        })
-        _set_pending(pending)
-        message, choices = _study_slot_prompt(options, pending["study_minutes"])
-        reply_line_message(reply_token, message, choices)
+            reply_line_message(reply_token,
+                f"已處理本題。第 {index+1}/{len(questions)} 題：{questions[index]} "
+                "確認新增 30 分鐘任務，或先不用？",choices)
+        else:
+            _remove_pending(user_id)
+            reply_line_message(reply_token,
+                "本次所有疑問已逐題確認。已接受的任務只進紫色待排區，"
+                "不會自動覆寫課表；請至 ClassPulse 確認安排。")
         return
 
-    if pending.get("stage") == "study_slot":
-        options = pending.get("study_slot_options", [])
-        if text in {AI_TASK_SKIP, "只存筆記"}:
+    if pending and pending.get("stage") == "ai_task_confirmation":
+        if text == AI_TASK_SKIP:
             _remove_pending(user_id)
-            reply_line_message(reply_token, "筆記已保存，未新增讀書任務。")
+            reply_line_message(reply_token, "已保留整理後的筆記，未新增讀書任務。")
             return
-        try:
-            selected_slot = options[int(text) - 1]
-        except (ValueError, IndexError):
-            message, choices = _study_slot_prompt(
-                options,
-                pending["study_minutes"],
+        if text != AI_TASK_ACCEPT:
+            reply_line_message(
+                reply_token,
+                "要把 AI 建議加入讀書計畫嗎？期限預設為課後 7 天，之後可在網站修改。",
+                [AI_TASK_ACCEPT, AI_TASK_SKIP],
             )
-            reply_line_message(reply_token, message, choices)
             return
-        pending["selected_availability_id"] = selected_slot["availability_id"]
         try:
-            task, plan_row = _save_note_task(user_id, pending, now)
+            task, plan_row = _schedule_confirmed_ai_task(user_id, pending, now)
         except (DataError, ValueError) as exc:
-            reply_line_message(reply_token, f"任務未能排程：{exc}。請重新選擇時段或輸入「取消」。")
-            return False
-        if plan_row.get("status") != "scheduled":
-            options = _available_note_task_slots(user_id, pending, now)
-            if not options:
-                pending["stage"] = "study_minutes"
-                pending.pop("study_slot_options", None)
-                pending.pop("selected_availability_id", None)
-                pending["expires_at"] = (now + timedelta(minutes=10)).isoformat(timespec="seconds")
-                _set_pending(pending)
-                reply_line_message(
-                    reply_token,
-                    "剛才選擇的時段已不再可用，且目前沒有其他可行時段。"
-                    "請調整 ClassPulse 可用時段後重新輸入分鐘數查詢。",
-                )
-                return
-            pending.update({
-                "stage": "study_slot",
-                "study_slot_options": options,
-                "expires_at": (now + timedelta(minutes=10)).isoformat(timespec="seconds"),
-            })
-            _set_pending(pending)
-            message, choices = _study_slot_prompt(options, pending["study_minutes"])
             reply_line_message(
                 reply_token,
-                "這個時段已無法排入，請從更新後的可行時段中重新選擇。\n" + message,
-                choices,
+                f"任務或排程處理失敗：{exc}。可再回覆「{AI_TASK_ACCEPT}」重試。",
+                [AI_TASK_ACCEPT, AI_TASK_SKIP],
             )
-            return
+            return False
         _remove_pending(user_id)
-        reply_line_message(
-            reply_token,
-            f"已新增「{task['title']}」，讀書進度："
-            f"{task.get('reading_progress') or '未填寫'}；"
-            f"預估 {task['estimated_minutes']} 分鐘，已排在 "
-            f"{selected_slot['date']} {selected_slot['start_time']}，"
-            f"Deadline 為 {task['deadline']}。",
-        )
+        if plan_row.get("status") == "scheduled":
+            slot = next(
+                (
+                    row for row in load_json(data_path("availability"))
+                    if row.get("availability_id") == plan_row.get("availability_id")
+                    and row.get("user_id") == user_id
+                ),
+                {},
+            )
+            reply_line_message(
+                reply_token,
+                f"已新增「{task['title']}」並排入 {slot.get('date')} "
+                f"{slot.get('start_time')}（{task['estimated_minutes']} 分鐘）。"
+                "如需調整期限或時段，請到 ClassPulse 修改後重新排程。",
+            )
+        else:
+            reason = plan_row.get("reason") or "目前沒有合適的可用時段"
+            reply_line_message(
+                reply_token,
+                f"已新增「{task['title']}」，但目前尚未排入：{reason}"
+                "。請到 ClassPulse 調整可用時段或期限後重新排程。",
+            )
+        return
+
+    if not pending:
         return
 
     if pending.get("stage") == "weekday":
@@ -1052,7 +818,6 @@ def _handle_text_event(event: dict, user: dict, now: datetime) -> bool | None:
         pending.update({
             "stage": "progress",
             "event_id": event_id,
-            "course_title": selected["title"],
             "class_date": class_date,
             "reminder_id": _find_class_reminder(user_id, event_id, class_date),
         })
@@ -1074,27 +839,11 @@ def _handle_text_event(event: dict, user: dict, now: datetime) -> bool | None:
                 PROGRESS_CHOICES,
             )
             return
-        pending.update({"stage": "course_progress", "progress": int(text)})
+        pending.update({"stage": "note", "progress": int(text)})
         _set_pending(pending)
         reply_line_message(
             reply_token,
-            "請輸入這堂課目前上到哪裡（例如 Ch.3、第三章 p.20 或進度 60%）；"
-            "不確定可回覆「略過」。",
-        )
-        return
-
-    if pending.get("stage") == "course_progress":
-        if len(text) > 120:
-            reply_line_message(reply_token, "上課進度請控制在 120 字以內，或回覆「略過」。")
-            return
-        pending.update({
-            "stage": "note",
-            "course_progress": "" if text in {"略過", "跳過"} else text,
-        })
-        _set_pending(pending)
-        reply_line_message(
-            reply_token,
-            "請輸入這堂課的上課重點筆記或疑問，或上傳 .docx／.pdf／.txt 檔案；輸入「取消」可放棄。",
+            "請輸入這堂課的上課重點筆記或疑問；輸入「取消」可放棄。",
         )
         return
 
@@ -1108,48 +857,103 @@ def _handle_text_event(event: dict, user: dict, now: datetime) -> bool | None:
             "received_at": now.isoformat(timespec="seconds"),
             "content": text,
             "progress": pending["progress"],
-            "course_progress": pending.get("course_progress", ""),
             "topic_tags": [],
             "source": "selected",
-            "attachment_filename": event.get("_attachment_filename", ""),
             "webhook_event_id": event.get("webhookEventId", ""),
+            "attachment_filename": event.get("_attachment_filename",""),
         }
-        attachment_content = event.get("_attachment_content")
-        if attachment_content is not None:
-            try:
-                save_feedback_attachment(
-                    feedback["feedback_id"], user_id, attachment_content
-                )
-            except DataError as exc:
-                reply_line_message(reply_token, f"PDF 原檔未能儲存，筆記未儲存：{exc}")
-                return False
         result = save_feedback(feedback)
         if result["error"]:
-            if attachment_content is not None:
-                try:
-                    delete_feedback_attachment(feedback["feedback_id"], user_id)
-                except DataError as cleanup_error:
-                    result["error"] += f"；清理暫存 PDF 也失敗：{cleanup_error}"
             reply_line_message(reply_token, f"筆記未儲存：{result['error']}")
             return False
         _remove_pending(user_id)
         if result["deduplicated"]:
-            if attachment_content is not None:
-                delete_feedback_attachment(feedback["feedback_id"], user_id)
             reply_line_message(reply_token, "這則回饋已存在，未重複儲存。")
             return
-        prefix = "筆記與自評進度已儲存。"
-        if event.get("_attachment_filename", "").lower().endswith(".pdf"):
-            prefix = "筆記與 PDF 原檔已儲存；可在網頁筆記庫下載原檔。"
-        if user.get("ai_after_class_enabled") is True:
-            prefix += "任務排定後，AI 會在該讀書時段開始時整理這份筆記並提供重點與複習建議。"
-        _request_manual_note_task(
+        if event.get("_attachment_content") is not None:
+            try:
+                save_pdf_attachment(user_id,feedback["feedback_id"],event["_attachment_content"])
+            except DataError as exc:
+                reply_line_message(reply_token,
+                    f"筆記文字已保存，但 PDF 原檔保存失敗：{exc}")
+                return
+        if user.get("ai_after_class_enabled") is not True:
+            reply_line_message(reply_token, "筆記與自評進度已儲存。")
+            return
+
+        course = next(
+            (
+                row for row in load_json(data_path("events"))
+                if row.get("user_id") == user_id
+                and row.get("event_id") == pending["event_id"]
+            ),
+            {},
+        )
+        try:
+            analysis = organize_class_feedback(feedback, course.get("title", ""))
+        except AIError as exc:
+            reply_line_message(
+                reply_token,
+                f"筆記與進度已保存，但 AI 整理失敗：{exc}",
+            )
+            return
+        try:
+            update_feedback_analysis(
+                feedback["feedback_id"],
+                user_id,
+                analysis,
+            )
+        except DataError as exc:
+            reply_line_message(
+                reply_token,
+                f"筆記已保存，但 AI 整理結果未能保存：{exc}",
+            )
+            return
+
+        response_text = _format_class_feedback_analysis(
+            analysis,
+            pending["progress"],
+        )
+        questions=extract_questions({**feedback,"ai_analysis":analysis})
+        if questions:
+            pending.update({
+                "stage":"ai_question_confirmation",
+                "questions":questions,
+                "question_index":0,
+                "feedback_id":feedback["feedback_id"],
+                "expires_at":(now+timedelta(minutes=10)).isoformat(timespec="seconds"),
+            })
+            _set_pending(pending)
+            reply_line_message(
+                reply_token,response_text+
+                f"\n已辨識 {len(questions)} 項獨立疑問。第 1 題：{questions[0]}"
+                "\n要新增 30 分鐘紫色任務嗎？期限預設下次上課前。",
+                [AI_TASK_ACCEPT,AI_TASK_SKIP],
+            )
+            return
+        if user.get("_personal_question_only"):
+            reply_line_message(reply_token, response_text +
+                               "\n沒有獨立疑問可建立紫色任務；筆記與摘要已保留。")
+            return
+        if not analysis["suggested_task"]:
+            reply_line_message(reply_token, response_text + "\n目前沒有足夠資訊提出複習任務。")
+            return
+
+        pending.update({
+            "stage": "ai_task_confirmation",
+            "feedback_id": feedback["feedback_id"],
+            "course_title": course["title"],
+            "suggested_task": analysis["suggested_task"],
+            "estimated_minutes": analysis["estimated_minutes"],
+            "expires_at": (now + timedelta(minutes=10)).isoformat(timespec="seconds"),
+        })
+        _set_pending(pending)
+        reply_line_message(
             reply_token,
-            pending,
-            feedback,
-            pending.get("course_title", "課程"),
-            now,
-            prefix,
+            response_text
+            + f"\n建議任務：{analysis['suggested_task']}（約 {analysis['estimated_minutes']} 分鐘）。"
+            "\n要加入讀書計畫嗎？期限預設為課後 7 天，可在網站修改。",
+            [AI_TASK_ACCEPT, AI_TASK_SKIP],
         )
 
 
@@ -1161,11 +965,46 @@ def _process_event(event: dict, now: datetime) -> None:
     if any(row.get("webhook_event_id") == webhook_event_id for row in processed):
         return
 
-    line_user_id = event.get("source", {}).get("userId", "")
+    source = event.get("source", {})
+    line_user_id = source.get("userId", "")
+    # Never process private notes or binding commands in group/room contexts.
+    # Missing source.type is retained for the legacy signed test contract.
+    if source.get("type") not in (None, "user") or event.get("mode") == "standby":
+        _mark_processed(webhook_event_id, now)
+        return
+    if event.get("type") == "follow" and os.getenv("LINE_FRIEND_DEMO_ENABLED") == "1":
+        # No account creation from group/room or standby events.
+        if (source.get("type") == "user" and event.get("mode") != "standby"
+                and is_valid_line_user_id(line_user_id)):
+            # Storage failures must not acknowledge a successful registration.
+            registered, _ = get_or_create_line_user(line_user_id)
+            status = registered.get("demo_status")
+            if status == "pending_seed" and os.getenv("LINE_FRIEND_DEMO_SEED_ENABLED") == "1":
+                seed_line_user(registered["user_id"], now)
+                status = SEEDED_STATUS
+            if status in ("pending_seed", SEEDED_STATUS):
+                reply_line_message(event.get("replyToken", ""),
+                                   SEEDED_DEMO_REPLY if status == SEEDED_STATUS else PENDING_DEMO_REPLY)
+            else:
+                reply_line_message(event.get("replyToken", ""), "你的 ClassPulse 帳號已存在，歡迎回來。")
+        _mark_processed(webhook_event_id, now)
+        return
+
     message = event.get("message", {})
     raw_text = message.get("text", "") if isinstance(message, dict) else ""
     text = raw_text.strip() if isinstance(raw_text, str) else ""
     reply_token = event.get("replyToken", "")
+    # Pending users cannot enter legacy commands or download attachments,
+    # even after the opt-in switch is disabled again.
+    if line_user_id:
+        existing = next((row for row in load_json(data_path("users"))
+                         if row.get("line_user_id") == line_user_id), None)
+        if existing and existing.get("demo_status") in ("pending_seed", SEEDED_STATUS):
+            if event.get("type") == "message" and source.get("type") == "user":
+                reply_line_message(reply_token, SEEDED_DEMO_REPLY
+                                   if existing.get("demo_status") == SEEDED_STATUS else PENDING_DEMO_REPLY)
+            _mark_processed(webhook_event_id, now)
+            return
     if text.startswith("綁定 "):
         binding_code = os.getenv("LINE_BINDING_CODE", "")
         supplied_code = text.partition(" ")[2].strip()
@@ -1184,7 +1023,7 @@ def _process_event(event: dict, now: datetime) -> None:
         return
 
     users = load_json(data_path("users"))
-    user = next((row for row in users if row.get("line_user_id") == line_user_id), None)
+    user = next((row for row in users if line_user_id and row.get("line_user_id") == line_user_id), None)
     if user:
         if event.get("type") == "message":
             if message.get("type") == "text":
@@ -1208,6 +1047,7 @@ def _process_event(event: dict, now: datetime) -> None:
 
 def create_app() -> Flask:
     app = Flask(__name__)
+    install_routes(app)
     secret = os.getenv("LINE_CHANNEL_SECRET", "")
 
     @app.get("/health")
