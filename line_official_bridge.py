@@ -82,6 +82,12 @@ def handle_personal_note(event):
                      and u.get("line_user_id") == subject), None)
         if user is None:
             return False
+        if kind == "text" and os.getenv("CLASSPULSE_FRIEND_PROGRESS_SYNC") == "1":
+            from line_personal_progress import handle_progress
+            result = handle_progress(event, user, now)
+            if result is not None:
+                line_bot._mark_processed(eid, now)
+                return True
         pending = line_bot._pending_for(uid, now)
         command = (text in ("補筆記", "查看筆記", "我的筆記", "AI補筆記", "同意AI整理")
                    or text.startswith(("筆記 ", "搜尋 ")))
@@ -135,7 +141,7 @@ def handle_personal_note(event):
             ai_ready and pending and pending.get("friend_ai_consent") is True
             and pending.get("stage") == "note"
             and pending.get("friend_ai_provider") == provider
-        ), _personal_question_only=True)
+        ), _personal_question_only=True, _personal_note_only=True)
         if kind == "file":
             ok = line_bot._handle_file_event(event, user, now)
         else:
