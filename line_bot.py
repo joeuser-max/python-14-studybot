@@ -5,6 +5,7 @@ import json
 import os
 
 from line_demo_registration import get_or_create_line_user, is_valid_line_user_id
+from line_demo_seed import SEEDED_STATUS, seed_line_user
 from line_note_files import clean_filename, download_line_file, extract_text
 from note_attachments import save_pdf_attachment
 from note_tasks import extract_questions, candidate_tasks, confirm_question_task, next_class_start
@@ -52,6 +53,7 @@ AI_TASK_ACCEPT = "加入讀書任務"
 AI_TASK_SKIP = "先不用"
 DEMO_USER_ID = "demo_user_001"
 PENDING_DEMO_REPLY = "你的 ClassPulse 帳號已建立，個人 Demo 資料尚未準備完成；目前暫不開放筆記、任務或 AI 功能。"
+SEEDED_DEMO_REPLY = "你的個人虛構 Demo 資料已建立，尚待網頁身份驗證與安全驗收；目前暫不開放筆記、任務或 AI 功能。"
 
 
 def verify_line_signature(body: bytes, signature: str, secret: str) -> bool:
@@ -962,8 +964,13 @@ def _process_event(event: dict, now: datetime) -> None:
                 and is_valid_line_user_id(line_user_id)):
             # Storage failures must not acknowledge a successful registration.
             registered, _ = get_or_create_line_user(line_user_id)
-            if registered.get("demo_status") == "pending_seed":
-                reply_line_message(event.get("replyToken", ""), PENDING_DEMO_REPLY)
+            status = registered.get("demo_status")
+            if status == "pending_seed" and os.getenv("LINE_FRIEND_DEMO_SEED_ENABLED") == "1":
+                seed_line_user(registered["user_id"], now)
+                status = SEEDED_STATUS
+            if status in ("pending_seed", SEEDED_STATUS):
+                reply_line_message(event.get("replyToken", ""),
+                                   SEEDED_DEMO_REPLY if status == SEEDED_STATUS else PENDING_DEMO_REPLY)
             else:
                 reply_line_message(event.get("replyToken", ""), "你的 ClassPulse 帳號已存在，歡迎回來。")
         _mark_processed(webhook_event_id, now)
@@ -978,9 +985,10 @@ def _process_event(event: dict, now: datetime) -> None:
     if line_user_id:
         existing = next((row for row in load_json(data_path("users"))
                          if row.get("line_user_id") == line_user_id), None)
-        if existing and existing.get("demo_status") == "pending_seed":
+        if existing and existing.get("demo_status") in ("pending_seed", SEEDED_STATUS):
             if event.get("type") == "message" and source.get("type") == "user":
-                reply_line_message(reply_token, PENDING_DEMO_REPLY)
+                reply_line_message(reply_token, SEEDED_DEMO_REPLY
+                                   if existing.get("demo_status") == SEEDED_STATUS else PENDING_DEMO_REPLY)
             _mark_processed(webhook_event_id, now)
             return
     if text.startswith("綁定 "):
