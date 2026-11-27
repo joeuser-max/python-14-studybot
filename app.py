@@ -13,6 +13,7 @@ from demo_data import mock_learning_suggestions, seed_demo_data
 from calendar_views import overview_events, view_options
 from mock_day import one_day_timeline, recommended_demo_day
 from line_mock_chat import start_chat, choices as mock_chat_choices, advance_chat, step_number
+from note_attachments import attachment_path
 from exporter import export_learning_markdown
 from storage import (
     DataError, TZ, add_availabilities, add_event, add_task_to_storage,
@@ -1039,9 +1040,26 @@ with pages[4]:
     if notes:
         for row in notes:
             with st.expander(
-                f"{row.get('class_date')}｜{course_titles.get(row.get('event_id'), '未知課程')}"
+                f"{row.get('class_date')}｜{course_titles.get(row.get('event_id'), '未分類筆記')}"
             ):
                 st.write(row.get("content", ""))
+                filename = row.get("attachment_filename","")
+                if filename:
+                    st.caption("LINE 附件：" + filename)
+                    if str(filename).lower().endswith(".pdf"):
+                        pdf_path=attachment_path(USER_ID,row["feedback_id"])
+                        if pdf_path.is_file():
+                            st.download_button(
+                                "下載 PDF 原始筆記",
+                                data=pdf_path.read_bytes(),
+                                file_name=filename,
+                                mime="application/pdf",
+                                key="note_pdf_"+row["feedback_id"],
+                            )
+                        else:
+                            st.caption("此筆記有檔名，但原始 PDF 未保存；擷取文字仍在上方。")
+                    else:
+                        st.caption("已保存擷取文字；目前不保存 TXT／DOCX 原檔。")
                 if row.get("progress") is not None:
                     st.caption(f"自評理解進度：{row['progress']}/5")
                 with st.form(f"note_tags_form_{row.get('feedback_id')}"):
