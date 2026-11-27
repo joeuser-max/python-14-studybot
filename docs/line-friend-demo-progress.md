@@ -181,3 +181,8 @@ raw private classroom notes in GitHub comments or screenshots.
   Shared JSON writes remain non-transactional across files. Raw storage APIs,
   direct file access, identity/session switching and deployment need further
   review at Step 16. This is targeted hardening, not a security certification.
+
+### Step 15 — Regression follow-up
+- @Onlynotonly reported all 40 targeted tests passed locally.
+- Full CI run 46063573670 on a6aaabc failed: 143 passed, 1 failed. The check-in scheduler built owner-qualified maps but still looked up bare IDs, returning zero valid due check-ins. Fixed both task and slot lookups; unambiguous legacy ownerless plan compatibility retained. Added two positive regression cases covering valid start and check-in reminders (explicit and legacy owner).
+- Full CI must pass before public identity integration is accepted. No deployment or feature flag changes.
