@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from datetime import date, datetime, time, timedelta
 from html import escape as escape_html
+import os
 from uuid import uuid4
 
 import streamlit as st
@@ -40,6 +41,10 @@ WEEKDAYS = {1: "週一", 2: "週二", 3: "週三", 4: "週四", 5: "週五", 6: 
 CALENDAR_KEY = "classpulse_schedule_calendar"
 
 st.set_page_config(page_title="ClassPulse", page_icon="📚", layout="wide")
+# The legacy UI has no authenticated identity yet. Fail closed if configured for public use.
+if os.getenv("CLASSPULSE_PUBLIC_WEB") == "1":
+    st.error("公開網頁身份驗證尚未完成；目前不可開放個人資料。")
+    st.stop()
 st.title("ClassPulse")
 st.caption("主動式學習回饋與規劃助手")
 quick1,quick2,_=st.columns([1.2,1.2,6])
@@ -61,7 +66,7 @@ if demo_mode:
 
 
 def read_all() -> dict:
-    return {name: load_json(data_path(name)) for name in
+    return {name: [row for row in load_json(data_path(name)) if row.get("user_id") == USER_ID] for name in
             ("events", "tasks", "availability", "plan", "reminders", "feedback", "users", "external_events", "semester_settings")}
 
 
