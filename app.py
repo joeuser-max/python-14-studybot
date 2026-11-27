@@ -22,7 +22,7 @@ from week_planner import (
     set_task_blocks, unplace,
 )
 from week_board import render_week_board
-from calendar_sync import preview_ics, import_ics, export_week_ics, edit_imported_event
+from calendar_sync import preview_ics, import_ics, export_week_ics, edit_imported_event, conflicts_with_existing_plan
 from study_metrics import personal_metrics, BENCHMARK_TEMPLATES, anonymized_benchmark
 from study_coach import CoachError, coach_with_gemini
 from peer_exchange import PeerProfileError, export_profile, import_profile
@@ -132,7 +132,23 @@ with pages[0]:
             try:
                 candidate_events = preview_ics(ics_file.getvalue(), USER_ID, ics_file.name, board_now)
                 st.caption(f"預覽：七日內共 {len(candidate_events)} 筆外部事件")
-                if st.button("匯入外部行事曆到 ClassPulse"):
+                existing_ids = {event["id"] for event in own(records["external_events"])}
+                applicable = [e for e in candidate_events
+                              if replace_existing or e["id"] not in existing_ids]
+                conflicts = conflicts_with_existing_plan(applicable, USER_ID)
+                confirmed_conflicts = True
+                if conflicts:
+                    st.warning(f"偵測到 {len(conflicts)} 個與目前讀書安排重疊的時段。"
+                               "匯入不會自動移動或覆寫讀書任務，請先檢查。")
+                    st.dataframe([{
+                        "外部事件": item["event_title"], "原讀書任務": item["task_title"],
+                        "原排程": item["task_start"]
+                    } for item in conflicts[:10]], hide_index=True)
+                    confirmed_conflicts = st.checkbox(
+                        "我已了解時間衝突，先保留原讀書任務，匯入後自行調整",
+                        value=False, key="ics_conflicts_acknowledged")
+                if st.button("匯入外部行事曆到 ClassPulse",
+                             disabled=not confirmed_conflicts):
                     counts = import_ics(candidate_events, USER_ID, overwrite=replace_existing)
                     st.success(f"新增／更新 {counts['saved']} 筆，略過重複 {counts['skipped']} 筆")
                     st.rerun()
