@@ -692,25 +692,26 @@ with pages[2]:
                 st.rerun()
         st.caption("虛擬對話中的 AI 建議為明確標示的 Mock；"
                    "只有按「加入讀書任務」才會把任務放進待排盒，不會自動填入日曆。")
-        with st.expander("本日提醒事件時間軸（可選）", expanded=False):
-            daily_events = one_day_timeline(mock_day, courses, demo_board["scheduled"])
-            if not daily_events:
-                st.info("這一天尚無課程或已排讀書任務。可選其他日期，或先建立課表、拖排任務。")
-            else:
-                selected_index = st.selectbox(
-                    "選擇這一天的事件",
-                    list(range(len(daily_events))),
-                    format_func=lambda i: f"{daily_events[i]['time']}  {daily_events[i]['title']}",
-                    key="line_mock_timeline_index",
-                )
-                st.progress((selected_index + 1) / len(daily_events),
-                            text=f"第 {selected_index + 1}／{len(daily_events)} 個事件")
-                event = daily_events[selected_index]
-                st.markdown(f"**{event['time']}｜{event['title']}**")
-                st.info(event["message"])
-                st.caption("上面的通知只顯示在瀏覽器，不代表 LINE API 已傳送成功。")
+        if st.session_state.get("show_legacy_line_debug",False):
+            with st.expander("本日提醒事件時間軸（可選）", expanded=False):
+                daily_events = one_day_timeline(mock_day, courses, demo_board["scheduled"])
+                if not daily_events:
+                    st.info("這一天尚無課程或已排讀書任務。可選其他日期，或先建立課表、拖排任務。")
+                else:
+                    selected_index = st.selectbox(
+                        "選擇這一天的事件",
+                        list(range(len(daily_events))),
+                        format_func=lambda i: f"{daily_events[i]['time']}  {daily_events[i]['title']}",
+                        key="line_mock_timeline_index",
+                    )
+                    st.progress((selected_index + 1) / len(daily_events),
+                                text=f"第 {selected_index + 1}／{len(daily_events)} 個事件")
+                    event = daily_events[selected_index]
+                    st.markdown(f"**{event['time']}｜{event['title']}**")
+                    st.info(event["message"])
+                    st.caption("上面的通知只顯示在瀏覽器，不代表 LINE API 已傳送成功。")
 
-    if demo_mode:
+    if demo_mode and st.session_state.get("show_legacy_line_debug",False):
         with st.expander("模擬 LINE 課後提醒與補筆記｜快速填寫（舊版）", expanded=False):
             st.caption("以下訊息僅為網頁展示，不會送到 LINE，也不需要 Webhook／API Key。")
             if any(c.get("weekday") == mock_day.isoweekday() for c in courses):
