@@ -5,10 +5,8 @@ from datetime import date, datetime, time, timedelta
 from uuid import uuid4
 
 import streamlit as st
-from streamlit_calendar import calendar
 
 from ai_assistant import AIError, ai_is_configured, analyze_learning_records
-from calendar_events import build_calendar_events
 from demo_data import mock_learning_suggestions, seed_demo_data
 from exporter import export_learning_markdown
 from storage import (
@@ -19,7 +17,12 @@ from storage import (
     save_feedback, select_demo_storage,
 )
 from tracker import calculate_response_rate, calculate_task_progress
-from plan_bridge import merge_user_plan, normalize_plan_result
+from week_planner import (
+    PERIODS, board_payload, fill_remaining, place_manual,
+    set_task_blocks, unplace,
+)
+from week_board import render_week_board
+from calendar_sync import preview_ics, import_ics, export_week_ics, edit_imported_event
 
 USER_ID = "demo_user_001"  # MVP：單一測試使用者；正式多人版須加入登入機制
 WEEKDAYS = {1: "週一", 2: "週二", 3: "週三", 4: "週四", 5: "週五", 6: "週六", 7: "週日"}
@@ -42,7 +45,7 @@ if demo_mode:
 
 def read_all() -> dict:
     return {name: load_json(data_path(name)) for name in
-            ("events", "tasks", "availability", "plan", "reminders", "feedback", "users")}
+            ("events", "tasks", "availability", "plan", "reminders", "feedback", "users", "external_events")}
 
 
 def own(records: list) -> list:
@@ -76,48 +79,104 @@ except DataError as exc:
     st.error(f"資料載入失敗：{exc}")
     st.stop()
 
-pages = st.tabs(["課表與時段", "讀書任務與排程", "回饋與進度", "Markdown 與 AI"])
+pages = st.tabs(["七日規劃板", "任務管理", "總覽與回饋", "Markdown 與 AI"])
 
 with pages[0]:
     courses = own(records["events"])
     slots = own(records["availability"])
     selected_calendar_entry = st.session_state.get("selected_calendar_entry", {})
-    st.subheader("課表與可用讀書時段行事曆")
-    st.caption("紅色為每週課程、綠色為可用時段、藍色為已排定讀書任務；可切換週／月／日檢視。")
-    calendar(
-        events=build_calendar_events(
-            courses,
-            slots,
-            own(records["tasks"]),
-            own(records["plan"]),
-        ),
-        options={
-            "headerToolbar": {
-                "left": "prev,next today",
-                "center": "title",
-                "right": "dayGridMonth,timeGridWeek,timeGridDay",
-            },
-            "initialView": "timeGridWeek",
-            "firstDay": 1,
-            "locale": "zh-tw",
-            "timeZone": "Asia/Taipei",
-            "allDaySlot": False,
-            "slotMinTime": "00:00:00",
-            "slotMaxTime": "24:00:00",
-            "nowIndicator": True,
-            "height": "auto",
-            "eventTimeFormat": {
-                "hour": "2-digit",
-                "minute": "2-digit",
-                "hour12": False,
-            },
-        },
-        callbacks=["eventClick"],
-        key=CALENDAR_KEY,
-        on_change=handle_calendar_change,
-    )
-    if selected_calendar_entry:
-        st.info("已選取行事曆項目；下方修改區會自動帶入該筆資料。")
+    st.subheader("七日規劃板")
+    st.caption("左側待排卡片可拖到任意空白節次；拉動右側把手修改工時。一鍵填滿才會自動排其他任務。")
+    board_now = datetime.now(TZ)
+    action = render_week_board(board_payload(USER_ID, board_now))
+    if action:
+        nonce = action.get("nonce")
+        if nonce and st.session_state.get("last_board_nonce") != nonce:
+            st.session_state["last_board_nonce"] = nonce
+            try:
+                if action.get("type") == "drop":
+                    place_manual(USER_ID, action["task_id"], action["date"],
+                                 action["period"], int(action["blocks"]), board_now)
+                    st.rerun()
+                elif action.get("type") == "resize":
+                    set_task_blocks(USER_ID, action["task_id"], int(action["blocks"]))
+                    st.rerun()
+                elif action.get("type") == "unplace":
+                    unplace(USER_ID, action["task_id"])
+                    st.rerun()
+                elif action.get("type") == "fill":
+                    outcome = fill_remaining(USER_ID, board_now)
+                    st.session_state["week_fill_result"] = (
+                        f"本次新增 {len(outcome['placed'])} 項安排、"
+                        f"仍有 {len(outcome['skipped'])} 項無法排入。"
+                    )
+                    st.rerun()
+                elif action.get("type") == "external_edit":
+                    st.session_state["editing_external_event_id"] = action.get("id")
+            except (DataError, KeyError, ValueError) as exc:
+                st.error(f"規劃操作未儲存：{exc}")
+    if st.session_state.get("week_fill_result"):
+        st.info(st.session_state.pop("week_fill_result"))
+
+    st.subheader("匯入與匯出外部行事曆")
+    with st.expander("外部行事曆（Google／Outlook／Apple 的 .ics）", expanded=False):
+        st.caption("匯入最近七天及重複事件展開結果；原本的外部帳號不會被改動。"
+                   "如有覆寫需求，請明確選擇。")
+        ics_file = st.file_uploader("選擇 ICS 檔案", type=["ics"], key="external_ics")
+        replace_existing = st.checkbox("確認覆寫具有相同來源 UID 與開始時間的本機事件",
+                                       value=False, key="ics_overwrite")
+        if ics_file:
+            try:
+                candidate_events = preview_ics(ics_file.getvalue(), USER_ID, ics_file.name, board_now)
+                st.caption(f"預覽：七日內共 {len(candidate_events)} 筆外部事件")
+                if st.button("匯入外部行事曆到 ClassPulse"):
+                    counts = import_ics(candidate_events, USER_ID, overwrite=replace_existing)
+                    st.success(f"新增／更新 {counts['saved']} 筆，略過重複 {counts['skipped']} 筆")
+                    st.rerun()
+            except (DataError, ValueError) as exc:
+                st.error(str(exc))
+        st.download_button("匯出七日行事曆（ICS）", data=export_week_ics(USER_ID, board_now),
+                           file_name=f"classpulse_{board_now:%Y%m%d}_7days.ics",
+                           mime="text/calendar", key="week_export_ics")
+
+    selected_external_id = st.session_state.get("editing_external_event_id")
+    if selected_external_id:
+        found_external = next(
+            (e for e in own(records["external_events"]) if e.get("id") == selected_external_id), None
+        )
+        if found_external:
+            @st.dialog("確認覆寫外部行事曆事件")
+            def edit_external_dialog(event):
+                st.warning("此操作只覆寫 ClassPulse 的本機匯入副本。"
+                           "原始 Google／Outlook／Apple 行事曆不會自動變更；"
+                           "需要再匯出 ICS 並由你自行匯入外部日曆。")
+                initial_start = datetime.fromisoformat(event["start"]).astimezone(TZ)
+                initial_end = datetime.fromisoformat(event["end"]).astimezone(TZ)
+                with st.form("edit_external_form"):
+                    new_title = st.text_input("事件名稱", value=event["title"])
+                    start_date = st.date_input("開始日期", value=initial_start.date())
+                    start_time = st.time_input("開始時間", value=initial_start.time())
+                    end_date = st.date_input("結束日期", value=initial_end.date())
+                    end_time = st.time_input("結束時間", value=initial_end.time())
+                    confirmed = st.form_submit_button("確認覆寫本機事件")
+                    if confirmed:
+                        try:
+                            edit_imported_event(
+                                USER_ID, event["id"], new_title,
+                                datetime.combine(start_date, start_time, tzinfo=TZ),
+                                datetime.combine(end_date, end_time, tzinfo=TZ),
+                                confirmed=True,
+                            )
+                            st.session_state.pop("editing_external_event_id", None)
+                            st.rerun()
+                        except (DataError, ValueError) as exc:
+                            st.error(str(exc))
+                if st.button("取消修改", key="cancel_external_dialog"):
+                    st.session_state.pop("editing_external_event_id", None)
+                    st.rerun()
+            edit_external_dialog(found_external)
+        else:
+            st.session_state.pop("editing_external_event_id", None)
     st.divider()
 
     st.subheader("設定每週課表")
@@ -322,205 +381,6 @@ with pages[0]:
             else:
                 st.info("請先在展示模式新增課程，才能預覽 LINE 課後提醒。")
 
-    st.subheader("新增可用讀書時段")
-    now = datetime.now(TZ)
-    slot_date = st.date_input(
-        "日期",
-        value=now.date(),
-        min_value=now.date(),
-        key="new_slot_date",
-    )
-    existing_ranges = []
-    for slot in slots:
-        if slot["date"] != slot_date.isoformat():
-            continue
-        start = time.fromisoformat(slot["start_time"])
-        start_minute = start.hour * 60 + start.minute
-        existing_ranges.append((start_minute, start_minute + slot["available_minutes"]))
-    class_ranges = []
-    for course in courses:
-        if course["weekday"] != slot_date.isoweekday():
-            continue
-        start = time.fromisoformat(course["start_time"])
-        end = time.fromisoformat(course["end_time"])
-        class_ranges.append(
-            (start.hour * 60 + start.minute, end.hour * 60 + end.minute)
-        )
-    current_minute = now.hour * 60 + now.minute
-    if now.second or now.microsecond:
-        current_minute += 1
-    day_parts = [
-        ("凌晨／清晨", 0, 360),
-        ("上午", 360, 720),
-        ("下午", 720, 1080),
-        ("晚上", 1080, 1440),
-    ]
-    selected_blocks = []
-    with st.form("add_slot", clear_on_submit=True):
-        st.caption("勾選有空的半小時區塊；連續區塊會自動合併成一個讀書時段。")
-        st.caption("灰色區塊代表已結束、與課程衝突或已設定為可用的時間。")
-        time_columns = st.columns(len(day_parts))
-        for column, (part_name, part_start, part_end) in zip(time_columns, day_parts):
-            with column:
-                st.markdown(f"**{part_name}**")
-                for start_minute in range(part_start, part_end, 30):
-                    end_minute = start_minute + 30
-                    occupied = any(
-                        start_minute < occupied_end and occupied_start < end_minute
-                        for occupied_start, occupied_end in existing_ranges + class_ranges
-                    )
-                    past = (
-                        slot_date == now.date()
-                        and end_minute <= current_minute
-                    )
-                    start_label = f"{start_minute // 60:02d}:{start_minute % 60:02d}"
-                    end_label = f"{end_minute // 60:02d}:{end_minute % 60:02d}"
-                    checkbox_key = (
-                        f"new_slot_block_{slot_date.isoformat()}_{start_label}"
-                    )
-                    checked = st.checkbox(
-                        f"{start_label}–{end_label}",
-                        key=checkbox_key,
-                        disabled=occupied or past,
-                    )
-                    if checked and not (occupied or past):
-                        selected_blocks.append(start_minute)
-        if st.form_submit_button("新增時段"):
-            if not selected_blocks:
-                st.error("請至少勾選一個半小時區塊")
-            else:
-                sorted_blocks = sorted(selected_blocks)
-                windows = []
-                window_start = previous_block = sorted_blocks[0]
-                for block_start in sorted_blocks[1:]:
-                    if block_start == previous_block + 30:
-                        previous_block = block_start
-                        continue
-                    windows.append((window_start, previous_block - window_start + 30))
-                    window_start = previous_block = block_start
-                windows.append((window_start, previous_block - window_start + 30))
-                new_slots = []
-                for start_minute, duration in windows:
-                    new_slots.append(
-                        {
-                            "availability_id": create_id("slot"),
-                            "user_id": USER_ID,
-                            "date": slot_date.isoformat(),
-                            "start_time": (
-                                f"{start_minute // 60:02d}:{start_minute % 60:02d}"
-                            ),
-                            "available_minutes": duration,
-                        }
-                    )
-                safely(
-                    lambda: add_availabilities(new_slots),
-                    f"已新增 {len(new_slots)} 個讀書時段",
-                )
-
-    st.subheader("修改既有可用讀書時段")
-    if slots:
-        slot_ids = [slot["availability_id"] for slot in slots]
-        clicked_slot_id = (
-            selected_calendar_entry.get("id")
-            if selected_calendar_entry.get("kind") == "availability"
-            else None
-        )
-        selected_slot_id = clicked_slot_id if clicked_slot_id in slot_ids else slot_ids[0]
-        slot_by_id = {slot["availability_id"]: slot for slot in slots}
-
-        def slot_label(availability_id: str) -> str:
-            slot = slot_by_id[availability_id]
-            return (
-                f"{slot['date']} {slot['start_time']}｜"
-                f"{slot['available_minutes']} 分鐘"
-            )
-
-        selected_slot_id = st.selectbox(
-            "選擇要修改的時段（也可先點上方行事曆）",
-            slot_ids,
-            index=slot_ids.index(selected_slot_id),
-            format_func=slot_label,
-            key=f"edit_slot_select_{selected_slot_id}",
-        )
-        selected_slot = slot_by_id[selected_slot_id]
-        fixed_task_count = sum(
-            task.get("preferred_availability_id") == selected_slot_id
-            for task in own(records["tasks"])
-        )
-        if fixed_task_count:
-            st.warning(
-                f"{fixed_task_count} 個任務固定使用此時段；刪除時會解除固定並清除舊計畫。"
-            )
-        with st.form(f"edit_slot_form_{selected_slot_id}"):
-            edit_slot_date = st.date_input(
-                "日期",
-                value=date.fromisoformat(selected_slot["date"]),
-                key=f"edit_slot_date_{selected_slot_id}",
-            )
-            edit_slot_start = st.time_input(
-                "開始時間",
-                value=time.fromisoformat(selected_slot["start_time"]),
-                step=900,
-                key=f"edit_slot_start_{selected_slot_id}",
-            )
-            edit_slot_minutes = st.number_input(
-                "可用分鐘",
-                min_value=1,
-                max_value=1440,
-                value=selected_slot["available_minutes"],
-                step=15,
-                key=f"edit_slot_minutes_{selected_slot_id}",
-            )
-            confirm_delete = st.checkbox(
-                "我確認要刪除此時段",
-                key=f"confirm_delete_slot_{selected_slot_id}",
-            )
-            save_slot_clicked = st.form_submit_button("儲存時段修改")
-            delete_slot_clicked = st.form_submit_button(
-                "刪除時段", type="secondary"
-            )
-            if save_slot_clicked:
-                updated_slot = {
-                    **selected_slot,
-                    "date": edit_slot_date.isoformat(),
-                    "start_time": edit_slot_start.strftime("%H:%M"),
-                    "available_minutes": int(edit_slot_minutes),
-                }
-
-                def save_slot_changes():
-                    update_availability(updated_slot)
-                    update_json(
-                        data_path("plan"),
-                        lambda rows: [
-                            row for row in rows
-                            if row.get("user_id") != USER_ID
-                        ],
-                    )
-
-                safely(save_slot_changes, "時段已更新；請重新產生讀書計畫")
-            elif delete_slot_clicked:
-                if not confirm_delete:
-                    st.error("請先勾選確認刪除此時段")
-                else:
-                    def delete_selected_slot():
-                        update_json(
-                            data_path("plan"),
-                            lambda rows: [
-                                row for row in rows
-                                if row.get("user_id") != USER_ID
-                            ],
-                        )
-                        clear_task_availability_preference(
-                            selected_slot_id, USER_ID
-                        )
-                        delete_availability(selected_slot_id, USER_ID)
-
-                    safely(
-                        delete_selected_slot,
-                        "時段已刪除；請重新產生讀書計畫",
-                    )
-    else:
-        st.info("新增第一個可用時段後，即可在此修改時段。")
 
 with pages[1]:
     st.subheader("新增讀書任務")
@@ -541,11 +401,6 @@ with pages[1]:
             f"{note.get('content', '')[:40]}"
         )
 
-    def slot_label(sid: str) -> str:
-        if not sid:
-            return "自動安排（不固定）"
-        s = slot_map[sid]
-        return f"{s['date']} {s['start_time']}（{s['available_minutes']} 分）"
     with st.form("add_task", clear_on_submit=True):
         subject = st.text_input("科目", placeholder="例如：電子學三")
         task_name = st.text_input("讀書任務", placeholder="例如：完成 Ch.12 題目")
@@ -553,8 +408,7 @@ with pages[1]:
         with a:
             deadline = st.date_input("Deadline", value=datetime.now(TZ).date() + timedelta(days=7))
         with b:
-            estimate = st.number_input("預估分鐘", min_value=1, value=60, step=15)
-        chosen_slot = st.selectbox("指定固定時段（選填）", [""] + list(slot_map), format_func=slot_label)
+            st.caption("初始 60 分鐘；新增後可在七日規劃板用卡片把手調整。")
         source_feedback_id = st.selectbox(
             "關聯課程進度／筆記（選填）",
             [""] + list(task_note_map),
@@ -565,8 +419,8 @@ with pages[1]:
         if st.form_submit_button("新增任務"):
             task = {"task_id": create_id("task"), "user_id": USER_ID,
                     "subject": subject.strip(), "title": task_name.strip(),
-                    "deadline": deadline.isoformat(), "estimated_minutes": int(estimate),
-                    "status": "pending", "preferred_availability_id": chosen_slot}
+                    "deadline": deadline.isoformat(), "estimated_minutes": 60,
+                    "status": "pending", "preferred_availability_id": ""}
             if source_feedback_id:
                 source_note = task_note_map[source_feedback_id]
                 task.update({
@@ -623,16 +477,7 @@ with pages[1]:
                 horizontal=True,
                 key=f"edit_task_status_{selected_task_id}",
             )
-            updated_remaining_minutes = st.number_input(
-                "剩餘所需分鐘",
-                min_value=1,
-                value=selected_task.get(
-                    "remaining_minutes", selected_task["estimated_minutes"]
-                ),
-                disabled=updated_status == "completed",
-                help="讀書時段未完成時，可在此手動回報剩餘時間；儲存後請重新安排計畫。",
-                key=f"edit_task_remaining_{selected_task_id}",
-            )
+            st.caption("要改變任務工時，請在「七日規劃板」待排卡片上橫向拖曳把手。")
             if st.form_submit_button("儲存任務修改"):
                 updated_task = {
                     **selected_task,
@@ -641,69 +486,26 @@ with pages[1]:
                     "deadline": updated_deadline.isoformat(),
                     "status": updated_status,
                 }
-                current_remaining = selected_task.get(
-                    "remaining_minutes", selected_task["estimated_minutes"]
-                )
                 if updated_status == "completed":
                     updated_task.pop("remaining_minutes", None)
-                elif (
-                    "remaining_minutes" in selected_task
-                    or int(updated_remaining_minutes) != selected_task["estimated_minutes"]
-                ):
-                    updated_task["remaining_minutes"] = int(updated_remaining_minutes)
+                    if selected_task.get("status") != "completed":
+                        updated_task["completed_at"] = datetime.now(TZ).isoformat(timespec="seconds")
                 else:
-                    updated_task.pop("remaining_minutes", None)
-                if int(updated_remaining_minutes) != current_remaining:
-                    current_plan_row = next(
-                        (
-                            row for row in own(records["plan"])
-                            if row.get("task_id") == selected_task_id
-                            and row.get("status") == "scheduled"
-                        ),
-                        {},
-                    )
-                    if (
-                        updated_task.get("preferred_availability_id")
-                        == current_plan_row.get("availability_id")
-                    ):
-                        updated_task["preferred_availability_id"] = ""
+                    updated_task.pop("completed_at", None)
 
                 def save_task_changes():
                     update_task(updated_task)
-                    update_json(
-                        data_path("plan"),
-                        lambda rows: [
-                            row for row in rows
-                            if row.get("user_id") != USER_ID
-                        ],
-                    )
+                    # 只解排本任務。其他任務無論自動或手動均保留原安排。
+                    if (updated_status != selected_task.get("status")
+                            or updated_deadline.isoformat() != selected_task["deadline"]):
+                        unplace(USER_ID, selected_task_id)
 
-                safely(
-                    save_task_changes,
-                    "科目、任務名稱、期限與狀態已更新；請重新產生讀書計畫",
-                )
+                safely(save_task_changes, "任務已更新；其他排程保持不變")
     else:
         st.info("新增第一項任務後，即可在此修改期限與狀態。")
 
-    st.subheader("讀書排程")
-    st.caption("依 Deadline、任務剩餘分鐘與可用時段重新安排；手動指定時段優先保留。")
-    if st.button("產生／重新安排計畫"):
-        try:
-            from scheduler import make_plan  # 莊育哲的模組；不以假資料冒充完成排程
-        except ImportError:
-            st.warning("尚未串接莊育哲負責的 scheduler.py，無法產生真實排程。")
-        else:
-            try:
-                plan_result = make_plan(tasks, own(records["availability"]), own(records["plan"]), datetime.now(TZ))
-                new_plan = normalize_plan_result(plan_result, USER_ID)
-                update_json(
-                    data_path("plan"),
-                    lambda rows: merge_user_plan(rows, USER_ID, new_plan),
-                )
-                st.success("讀書計畫已重新產生")
-                st.rerun()
-            except (DataError, ValueError) as exc:
-                st.error(f"排程失敗：{exc}")
+    st.subheader("排程狀態")
+    st.caption("手動拖排與『一鍵填滿剩餘任務』位於七日規劃板；此頁不會自動重排其他任務。")
     if own(records["plan"]):
         st.dataframe(own(records["plan"]), hide_index=True)
         task_titles = {task["task_id"]: task["title"] for task in tasks}
