@@ -25,7 +25,7 @@ from week_board import render_week_board
 from calendar_sync import preview_ics, import_ics, export_week_ics, edit_imported_event, conflicts_with_existing_plan
 from study_metrics import personal_metrics, BENCHMARK_TEMPLATES, anonymized_benchmark
 from study_coach import CoachError, coach_with_gemini, mock_coach_for_demo
-from peer_exchange import PeerProfileError, export_profile, import_profile
+from peer_exchange import PeerProfileError, export_profile, import_profile, combine_profiles
 
 USER_ID = "demo_user_001"  # MVP：單一測試使用者；正式多人版須加入登入機制
 WEEKDAYS = {1: "週一", 2: "週二", 3: "週三", 4: "週四", 5: "週五", 6: "週六", 7: "週日"}
@@ -611,23 +611,35 @@ with pages[2]:
             key="peer_export_profile",
             help="只包含每週安排數量、常用節次、單次時長與自填總覽指標；不含課名或個人身分。",
         )
-        uploaded_training = st.file_uploader(
-            "匯入同學自願分享的訓練模板（JSON）",
-            type=["json"], key="peer_training_upload",
+        uploaded_trainings = st.file_uploader(
+            "匯入同學自願分享的訓練模板（可同時選擇多份 JSON）",
+            type=["json"], accept_multiple_files=True, key="peer_training_upload",
         )
-        imported_template = None
-        if uploaded_training:
+        imported_profiles = []
+        for uploaded in uploaded_trainings[:12]:
             try:
-                imported_template = import_profile(uploaded_training.getvalue())
-                st.info("已讀取匿名訓練模板。資料為分享者自行填寫或提供，"
-                        "未經實名驗證，不能作為校內排名或客觀效率證據。")
+                imported_profiles.append(import_profile(uploaded.getvalue()))
             except PeerProfileError as exc:
-                st.error(str(exc))
-        choices = list(BENCHMARK_TEMPLATES) + (["同學分享的模板"] if imported_template else [])
+                st.error(f"{uploaded.name}：{exc}")
+        if len(uploaded_trainings) > 12:
+            st.warning("一次最多合成 12 份模板；其餘尚未載入")
+        if imported_profiles:
+            st.info(f"已載入 {len(imported_profiles)} 份匿名模板。"
+                    "這些資料由分享者自行提供，未查證身分或學習成效，"
+                    "僅能比較學習節奏，不能計算校內排名。")
+        choices = list(BENCHMARK_TEMPLATES)
+        if imported_profiles:
+            choices.append("同學分享的第一份模板")
+        if len(imported_profiles) >= 2:
+            choices.append("匿名小組綜合模板")
         style_name = st.selectbox("選擇參考訓練型態", choices,
                                   key="coach_template_style")
-        template = (imported_template if style_name == "同學分享的模板"
-                    else BENCHMARK_TEMPLATES[style_name])
+        if style_name == "匿名小組綜合模板":
+            template = combine_profiles(imported_profiles)
+        elif style_name == "同學分享的第一份模板":
+            template = imported_profiles[0]
+        else:
+            template = BENCHMARK_TEMPLATES[style_name]
         st.caption(f"{template['name']}｜每週 {template['sessions_per_week']} 次｜"
                    f"單次最多 {template['maximum_blocks']} 節｜{template['goal']}")
         profile = anonymized_benchmark(metric, template)
