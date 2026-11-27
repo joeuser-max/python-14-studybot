@@ -4,7 +4,7 @@ import hmac
 import json
 import os
 
-from line_demo_registration import get_or_create_line_user
+from line_demo_registration import get_or_create_line_user, is_valid_line_user_id
 from line_note_files import clean_filename, download_line_file, extract_text
 from note_attachments import save_pdf_attachment
 from note_tasks import extract_questions, candidate_tasks, confirm_question_task, next_class_start
@@ -958,13 +958,10 @@ def _process_event(event: dict, now: datetime) -> None:
     line_user_id = source.get("userId", "")
     if event.get("type") == "follow" and os.getenv("LINE_FRIEND_DEMO_ENABLED") == "1":
         # No account creation from group/room or standby events.
-        if source.get("type") == "user" and event.get("mode") != "standby":
-            try:
-                registered, _ = get_or_create_line_user(line_user_id)
-            except DataError:
-                # Malformed IDs do not create an account.
-                _mark_processed(webhook_event_id, now)
-                return
+        if (source.get("type") == "user" and event.get("mode") != "standby"
+                and is_valid_line_user_id(line_user_id)):
+            # Storage failures must not acknowledge a successful registration.
+            registered, _ = get_or_create_line_user(line_user_id)
             if registered.get("demo_status") == "pending_seed":
                 reply_line_message(event.get("replyToken", ""), PENDING_DEMO_REPLY)
             else:
