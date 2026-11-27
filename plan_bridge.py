@@ -12,11 +12,15 @@ def normalize_plan_result(result: object, user_id: str) -> list[dict]:
         plan = result
     if not isinstance(plan, list) or any(not isinstance(item, dict) for item in plan):
         raise ValueError("scheduler.make_plan 必須回傳包含 dict 清單的 plan")
+    if not user_id or any(row.get("user_id", user_id) != user_id for row in plan):
+        raise ValueError("排程所有者不一致")
     return [{**row, "user_id": user_id} for row in plan]
 
 
 def merge_user_plan(rows: list[dict], user_id: str, new_plan: list[dict]) -> list[dict]:
     """Replace one user's plan while preserving alert-delivery state and other users."""
+    if not user_id or any(row.get("user_id", user_id) != user_id for row in new_plan):
+        raise ValueError("排程所有者不一致")
     previous = {
         row.get("task_id"): row
         for row in rows
