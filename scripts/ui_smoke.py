@@ -55,6 +55,19 @@ def main():
                     page.get_by_text("展示模式（使用獨立的範例資料）", exact=False).click()
                     expect(page.locator(".cards .card")).to_have_count(2, timeout=25000)
 
+                    # Resize a pending card by dragging its right-hand handle.
+                    grip = page.locator(".cards .card").first.locator(".grip")
+                    bounds = grip.bounding_box()
+                    assert bounds is not None
+                    center_x = bounds["x"] + bounds["width"] / 2
+                    center_y = bounds["y"] + bounds["height"] / 2
+                    page.mouse.move(center_x, center_y)
+                    page.mouse.down()
+                    page.mouse.move(center_x + 39, center_y, steps=6)
+                    page.mouse.up()
+                    expect(page.locator(".cards .card").first).to_contain_text(
+                        "2 節", timeout=25000)
+
                     # Drag exactly ONE task to tomorrow 08:00; the other stays pending.
                     page.locator(".cards .card").first.drag_to(page.locator(".matrix .cell").nth(1))
                     expect(page.locator(".cards .card")).to_have_count(1, timeout=25000)
@@ -65,7 +78,7 @@ def main():
                     expect(page.locator(".cards .card")).to_have_count(0, timeout=25000)
                     expect(page.locator(".event.study")).to_have_count(2)
                     assert not errors, "JavaScript errors: " + "; ".join(errors)
-                    print("通過：七日十六節、待排卡片、單項手動拖排、一鍵填滿")
+                    print("通過：七日十六節、卡片拉長、單項手動拖排、一鍵填滿")
                 except Exception:
                     page.screenshot(path="/tmp/classpulse-ui-smoke-failure.png", full_page=True)
                     raise
