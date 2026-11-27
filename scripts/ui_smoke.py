@@ -113,9 +113,10 @@ def main():
                     # new physical drag; otherwise the drag begins on a stale node.
                     page.wait_for_timeout(1000)
 
-                    # Drag resized task to T+4 at 20:00: safely before its T+5
-                    # deadline and clear of classes and the initial study plan.
-                    # Row C (20:00) = row index 12; day T+4 = column index 4.
+                    # Select a visible top-row empty destination. Earlier the
+                    # T+4 20:00 cell was outside the viewport, so dragging the
+                    # pointer moved the Streamlit wrapper rather than the task.
+                    # T+1 Saturday 08:00 is a valid unoccupied two-hour slot.
                     page.evaluate("""() => {
                       window.__cpDragTrace = [];
                       for (const type of ["dragstart","dragenter","dragover","drop","dragend"]) {
@@ -129,7 +130,7 @@ def main():
                     # drop reliably in Chrome (the direct drag_to shortcut can miss
                     # nested CSS-grid destinations after a Streamlit remount).
                     source = page.locator(".cards .card").first.bounding_box()
-                    target = page.locator(".matrix .cell").nth(88).bounding_box()
+                    target = page.locator(".matrix .cell").nth(1).bounding_box()
                     assert source is not None and target is not None
                     sx, sy = source["x"] + 17, source["y"] + source["height"] / 2
                     tx, ty = target["x"] + target["width"] / 2, target["y"] + target["height"] / 2
