@@ -28,6 +28,7 @@ FILES = {
     "plan": "plan.json", "users": "users.json", "reminders": "reminders.json",
     "feedback": "feedback.json", "pending_notes": "pending_notes.json",
     "processed_webhooks": "processed_webhooks.json",
+    "external_events": "external_events.json",
 }
 TZ = ZoneInfo("Asia/Taipei")
 
