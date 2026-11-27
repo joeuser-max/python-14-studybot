@@ -1,0 +1,40 @@
+{
+    admin off
+    auto_https off
+    persist_config off
+}
+http://:18080 {
+    bind 127.0.0.1
+    route {
+        handle /readyz {
+            respond "{$CLASSPULSE_LAUNCH_ID}" 200
+        }
+        @officialWebhook {
+            path /webhook/classpulse
+            method POST
+        }
+        handle @officialWebhook {
+            rewrite * /webhook
+            reverse_proxy 127.0.0.1:5002
+        }
+        @testerWebhook {
+            path /webhook
+            method POST
+        }
+        handle @testerWebhook {
+            reverse_proxy 127.0.0.1:5001
+        }
+        handle /webhook* {
+            respond 404
+        }
+        handle /health {
+            reverse_proxy 127.0.0.1:5001
+        }
+        handle /auth/line/* {
+            reverse_proxy 127.0.0.1:5001
+        }
+        handle {
+            reverse_proxy 127.0.0.1:8502
+        }
+    }
+}
