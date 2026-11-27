@@ -212,6 +212,8 @@ def start(new_tunnel=False):
         raise KeyboardInterrupt
 
     signal.signal(signal.SIGTERM, stop_signal)
+    if hasattr(signal, "SIGHUP"):
+        signal.signal(signal.SIGHUP, stop_signal)
     try:
         write_state("preflight")
         tester, official = load_configs()
@@ -221,6 +223,12 @@ def start(new_tunnel=False):
         caddy = shutil.which("caddy")
         if not caddy:
             raise RuntimeError("caddy not found on PATH")
+        worker_lock = FileLock(str(DATA / ".personal-auto-worker.lock"))
+        try:
+            worker_lock.acquire(timeout=0)
+        except Timeout:
+            raise RuntimeError("Stop the old automatic worker before launching")
+        worker_lock.release()
         if not signed_probe("http://127.0.0.1:5000/webhook", official["LINE_CHANNEL_SECRET"]):
             raise RuntimeError("Existing legacy Flask 5000 failed signed empty probe; leave it external")
         origin = official["CLASSPULSE_WEB_ORIGIN"]
