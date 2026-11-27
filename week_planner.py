@@ -187,7 +187,8 @@ def unplace(user_id: str, task_id: str) -> None:
     ])
 
 
-def fill_remaining(user_id: str, now: datetime | None = None) -> dict:
+def fill_remaining(user_id: str, now: datetime | None = None,
+                   only_task_ids: set[str] | None = None) -> dict:
     """一鍵填滿：只處理未排入任務，依 Deadline→較長工時優先，再找最早連續空格。
 
     手動安排與既有有效排程不會移動；每個任務為單一連續區塊。
@@ -212,6 +213,7 @@ def fill_remaining(user_id: str, now: datetime | None = None) -> dict:
         task for task in records["tasks"]
         if task.get("user_id") == user_id and task.get("status") == "pending"
         and task.get("task_id") not in planned
+        and (only_task_ids is None or task.get("task_id") in only_task_ids)
     ), key=lambda t: (t["deadline"], -int(t.get("remaining_minutes") or t["estimated_minutes"]), t["task_id"]))
     # 新規格：偏好綠格是軟目標，絕不可把未塗綠的合法時段排除。
     from schedule_preferences import available_preference_cells, preference_overlap
