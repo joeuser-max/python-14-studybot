@@ -30,6 +30,7 @@ FILES = {
     "processed_webhooks": "processed_webhooks.json",
     "external_events": "external_events.json",
     "preference_targets": "preference_targets.json",
+    "semester_settings": "semester_settings.json",
 }
 TZ = ZoneInfo("Asia/Taipei")
 
