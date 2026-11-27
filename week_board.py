@@ -67,6 +67,10 @@ export default function(component) {
   const root=parentElement.querySelector(".wb");
   const matrix=root.querySelector(".matrix");
   const deck=root.querySelector(".cards");
+  // 元件在 Streamlit 重新執行時可能重用同一個 shadow DOM。
+  // 每次繪製前清空舊格與卡片，避免行事曆格子越刷越多。
+  matrix.replaceChildren();
+  deck.replaceChildren();
   const days=data.days||[], periods=data.periods||[], tasks=data.tasks||[];
   let dragged=null, selected=null;
   const send=(v)=>setTriggerValue("action",JSON.stringify({...v,nonce:Date.now()+"-"+Math.random()}));
