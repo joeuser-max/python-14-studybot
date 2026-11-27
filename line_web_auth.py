@@ -150,6 +150,9 @@ def verified_subject(code, attempt):
 def _owner(subject):
     if is_demo_storage():
         raise AuthError("無效的登入資料範圍")
+    allowlist = os.getenv("CLASSPULSE_STAGING_TEST_USERS")
+    if allowlist is not None and subject not in {s.strip() for s in allowlist.split(",") if s.strip()}:
+        raise AuthError("此帳號不在私人驗收名單中")
     rows = load_json(data_path("users"))
     matches = [r for r in rows if r.get("line_user_id") == subject]
     if len(matches) != 1:
