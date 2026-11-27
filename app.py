@@ -902,6 +902,7 @@ with pages[3]:
                     "source_feedback_id": source_feedback_id,
                     "source_event_id": source_note["event_id"],
                     "source_class_date": source_note["class_date"],
+                    "reading_progress": source_note.get("course_progress", ""),
                 })
             safely(lambda: add_task_to_storage(task), "任務已新增")
 
@@ -911,6 +912,7 @@ with pages[3]:
             "任務": x["title"],
             "科目": x["subject"],
             "期限": x["deadline"],
+            "讀書進度": x.get("reading_progress", ""),
             "原始預估分鐘": x["estimated_minutes"],
             "剩餘分鐘": x.get("remaining_minutes", x["estimated_minutes"]),
             "狀態": x["status"],
@@ -940,6 +942,12 @@ with pages[3]:
                 value=selected_task["subject"],
                 key=f"edit_task_subject_{selected_task_id}",
             )
+            updated_reading_progress = st.text_input(
+                "讀書進度",
+                value=selected_task.get("reading_progress", ""),
+                max_chars=120,
+                key=f"edit_task_reading_progress_{selected_task_id}",
+            )
             updated_deadline = st.date_input(
                 "Deadline",
                 value=date.fromisoformat(selected_task["deadline"]),
@@ -958,6 +966,7 @@ with pages[3]:
                     **selected_task,
                     "title": updated_title.strip(),
                     "subject": updated_subject.strip(),
+                    "reading_progress": updated_reading_progress.strip(),
                     "deadline": updated_deadline.isoformat(),
                     "status": updated_status,
                 }
@@ -1231,6 +1240,8 @@ with pages[4]:
                         st.caption("已保存擷取文字；目前不保存 TXT／DOCX 原檔。")
                 if row.get("progress") is not None:
                     st.caption(f"自評理解進度：{row['progress']}/5")
+                if row.get("course_progress"):
+                    st.caption(f"上課進度：{row['course_progress']}")
                 with st.form(f"note_tags_form_{row.get('feedback_id')}"):
                     current_tags = row.get("topic_tags")
                     if current_tags is None and isinstance(row.get("ai_analysis"), dict):

@@ -1,5 +1,6 @@
 .env
 data/*.json
+data/attachments/
 __pycache__/
 .pytest_cache/
 .classpulse-demo-data/

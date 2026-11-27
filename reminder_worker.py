@@ -157,7 +157,7 @@ def run_reminder_worker_once(now: datetime | None = None) -> list[dict]:
 
         if reminder["kind"] == "class_feedback":
             text = (
-                "課後回饋時間到囉！請在 LINE 輸入「補筆記」，"
+                f"課後回饋時間到囉！科目：{next((e.get('title', '') for e in events if e.get('user_id') == reminder['user_id'] and e.get('event_id') == reminder['event_id']), '課程')}。請在 LINE 輸入「補筆記」，"
                 "回報本堂理解進度並記錄學習重點與疑問。"
             )
         elif reminder["kind"] == "study_session":

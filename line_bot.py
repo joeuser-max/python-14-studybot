@@ -299,18 +299,21 @@ def _bind_demo_user(line_user_id: str) -> None:
 
 def _find_class_reminder(user_id: str, event_id: str, class_date: str) -> str:
     reminders = load_json(data_path("reminders"))
-    row = next(
-        (
-            item for item in reminders
-            if item.get("kind") == "class_feedback"
-            and item.get("status") == "sent"
-            and item.get("user_id") == user_id
-            and item.get("event_id") == event_id
-            and item.get("class_date") == class_date
-        ),
-        None,
-    )
-    return row.get("reminder_id", "") if row else ""
+    matches = [
+        item for item in reminders
+        if item.get("kind") == "class_feedback"
+        and item.get("status") == "sent"
+        and item.get("user_id") == user_id
+        and item.get("event_id") == event_id
+        and item.get("class_date") == class_date
+    ]
+    if not matches:
+        return ""
+    row = max(matches, key=lambda r: (
+        r.get("scheduled_at") or "",
+        r.get("sent_at") or "",
+    ))
+    return row.get("reminder_id", "")
 
 
 def _update_checkin(

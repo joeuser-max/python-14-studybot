@@ -37,7 +37,7 @@
 4. git diff --check、Python 語法、完整 pytest、Playwright UI 與 CI。223 是已驗收來源的測試基準，不是合併後預定總數；B 新增測試可能使總數提高。
 5. 在隔離環境驗收核心路徑、LINE 及 Gemini（若有授權）。不對原本運作的 bot 做未經同意的切換。
 6. 提交具雙親的 merge commit，push 到候選分支，檢查 PR 相對 main 的 diff、CI、作者與貢獻紀錄。組員審查後以一般 merge commit 合併 main；不 squash 或 rebase 掉作者與整合歷史。
-7. 合併後確認 main 包含雙方歷史與 README/CONTRIBUTIONS，紀錄 main SHA。之後再決定正式版本標籤、預設分支保護與歷史 PR 整理。
+7. 合併後確認 main 包含雙方歷史與 README 與專題文件，紀錄 main SHA。之後再決定正式版本標籤、預設分支保護與歷史 PR 整理。
 
 ## 不等於完成
 
