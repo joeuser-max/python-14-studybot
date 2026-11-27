@@ -2,6 +2,7 @@ import hashlib
 import hmac
 import base64
 import json
+import os
 
 import pytest
 from filelock import FileLock
@@ -32,6 +33,7 @@ def configured(tmp_path, monkeypatch):
     return data, runtime
 
 
+@pytest.mark.skipif(os.name == "nt", reason="macOS local supervisor requires POSIX mode 0600; Windows offline demo uses Streamlit directly")
 def test_configs_and_role_env_are_isolated(configured, monkeypatch):
     data, _ = configured
     tester, official = manager.load_configs()
@@ -52,6 +54,7 @@ def test_configs_and_role_env_are_isolated(configured, monkeypatch):
             assert not env["LINE_LOGIN_CHANNEL_SECRET"]
 
 
+@pytest.mark.skipif(os.name == "nt", reason="macOS local supervisor requires POSIX mode 0600; Windows offline demo uses Streamlit directly")
 def test_rejects_duplicate_credentials_and_loose_permissions(configured):
     path = manager.ROOT / "data" / "official-bridge.env"
     original = path.read_text()
