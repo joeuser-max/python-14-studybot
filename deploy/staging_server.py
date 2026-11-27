@@ -43,6 +43,8 @@ def configure(env):
         LINE_FRIEND_DEMO_ENABLED="0", LINE_FRIEND_DEMO_SEED_ENABLED="0",
         LINE_CHANNEL_SECRET="", LINE_CHANNEL_ACCESS_TOKEN="",
         OPENAI_API_KEY="", GEMINI_API_KEY="",
+        GUNICORN_CMD_ARGS="", HOME="/tmp",
+        CLASSPULSE_STAGING_TEST_USERS=",".join(subjects),
     )
     return subjects
 
