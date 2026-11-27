@@ -5,7 +5,7 @@ import streamlit as st
 HTML = """
 <div class="wb">
   <aside class="deck"><header><strong>待排任務</strong><small class="count"></small></header>
-    <small>拖曳至右側空格，卡片右側把手可橫向調整 1–4 節。也可點卡片後再點目標格。</small>
+    <small>卡片右側可伸縮，每次 30 分鐘；拖到時間格或先點卡片再點時段。已排方塊底部可直接拉長／縮短。</small>
     <section class="cards"></section>
     <button class="autofill">一鍵安排剩餘任務</button>
     <div class="preference-controls">
@@ -16,7 +16,8 @@ HTML = """
   </aside>
   <main class="board"><header><strong>未來七日 · 16 節</strong><small>T+0 至 T+6，沒有過去日期</small></header>
     <div class="matrix"></div>
-    <footer>紅：固定課程　黃：外部活動　藍：已排任務　綠：可用且偏好的時段；其他空白仍可排</footer>
+    <footer>紅：固定課程　黃：外部活動　藍：一般任務　紫：AI 筆記任務　綠：偏好時段（不是硬限制）</footer>
+    <div class="board-alert" role="alert" aria-live="polite"></div>
   </main>
 </div>
 """
@@ -32,6 +33,8 @@ gap:12px;font-family:inherit;color:#24334a}
 font-size:10px;color:#17458e;padding:6px;cursor:grab;max-width:100%;
 display:flex;align-items:center;justify-content:space-between;gap:4px;overflow:hidden}
 .card.selected{outline:2px solid #3166cc}
+.card.ai{background:#efe3ff;border-color:#aa86dd;color:#592b8a}
+.card.ai.selected{outline-color:#8356c4}
 .card .info{overflow:hidden;white-space:nowrap;min-width:0}
 .card .title{font-weight:bold;overflow:hidden;text-overflow:ellipsis}
 .card .grip{min-width:10px;height:27px;cursor:ew-resize;touch-action:none;
@@ -43,7 +46,7 @@ padding:9px;margin:10px 0 4px;font-size:12px;font-weight:bold;cursor:pointer}
 background:#fff;color:#31455e;cursor:pointer;font-size:11px;display:none}
 .pref-hint{display:block;margin-top:4px}
 .matrix{display:grid;grid-template-columns:52px repeat(7,minmax(0,1fr));
-grid-template-rows:37px repeat(16,32px);border-top:1px solid #dbe1e9;
+grid-template-rows:37px repeat(32,20px);border-top:1px solid #dbe1e9;
 border-left:1px solid #dbe1e9;position:relative}
 .matrix>div{min-width:0;border-right:1px solid #dbe1e9;border-bottom:1px solid #dbe1e9}
 .hdr{background:#f1f5fa;text-align:center;font-weight:700;font-size:10px;
@@ -57,6 +60,13 @@ gap:4px;font-size:10px}
 .cell.paintable{cursor:crosshair}
 .cell.past{background:#eff1f4;cursor:not-allowed}
 .cell.over{background:#d6e8ff}
+.cell.over-conflict{background:#ffcdd2!important;box-shadow:inset 0 0 0 2px #c94352}
+.cell.busy{cursor:not-allowed}
+.board-alert{margin-top:6px;color:#a12635;font-size:12px;font-weight:600;min-height:0}
+.event.study.ai{background:#ead9fc;color:#542a83;border-color:#8356c4}
+.event .resize-handle{position:absolute;z-index:8;left:25%;right:25%;bottom:0;
+height:7px;border-radius:5px;background:rgba(45,77,126,.38);cursor:ns-resize;touch-action:none}
+.event.study.ai .resize-handle{background:#8356c4}
 .event{position:relative;z-index:3;border-radius:4px;margin:1px;padding:3px;
 font-size:10px;line-height:1.2;overflow:hidden;word-break:break-word;
 border-left:3px solid;min-height:0}
@@ -83,6 +93,10 @@ export default function(component) {
   deck.replaceChildren();
   const days=data.days||[], periods=data.periods||[], tasks=data.tasks||[];
   let dragged=null, selected=null, handledDrop=false;
+  const errorBox=root.querySelector(".board-alert");
+  errorBox.textContent=data.error||"";
+  const showError=(message)=>{errorBox.textContent=message;errorBox.scrollIntoView({block:"nearest"});};
+  const minutesLabel=(min)=>min%60===0?(min/60)+" 節":min+" 分鐘";
   const preferenceMode=Boolean(data.preference_mode);
   const preferenceSet=new Set((data.preferences||[]).map(p=>p.date+"|"+p.period));
   let painting=false,paintDesired=true,paintMap=new Map();
@@ -104,19 +118,22 @@ export default function(component) {
     :"只有準備一鍵安排時才進入畫筆；偏好會保留直到你修改或清除。";
   if(tasks.length===0)deck.append(cell("empty","目前沒有待排任務"));
   tasks.forEach(t=>{
-    let blocks=Number(t.blocks)||1;
-    const card=cell("card","");
-    card.style.width=Math.min(100,24+blocks*19)+"%";
+    let minutes=Number(t.minutes)||Number(t.blocks||1)*60;
+    let blocks=Math.ceil(minutes/60);
+    const card=cell("card"+(t.is_ai?" ai":""),"");
+    card.style.width=Math.min(100,24+minutes/60*19)+"%";
     const info=cell("info",""),title=cell("title",t.title),subtitle=cell("subtitle","");
-    const update=()=>{subtitle.textContent=t.subject+"｜"+blocks+" 節｜期限 "+t.deadline;
-      card.style.width=Math.min(100,24+blocks*19)+"%";};
+    const update=()=>{blocks=Math.ceil(minutes/60);
+      subtitle.textContent=t.subject+"｜"+minutesLabel(minutes)+"｜期限 "+(t.deadline_at||t.deadline);
+      card.style.width=Math.min(100,24+minutes/60*19)+"%";};
     update();info.append(title,subtitle);
     const grip=cell("grip","");grip.title="橫向拖曳改變長度";
     card.append(info,grip);
     card.draggable=true;
-    card.ondragstart=(evt)=>{dragged={task_id:t.task_id,blocks};handledDrop=false;
+    card.ondragstart=(evt)=>{dragged={task_id:t.task_id,blocks,minutes};handledDrop=false;
       evt.dataTransfer.setData("text/plain",t.task_id);
       evt.dataTransfer.setData("application/x-classpulse-blocks",String(blocks));
+      evt.dataTransfer.setData("application/x-classpulse-minutes",String(minutes));
       evt.dataTransfer.effectAllowed="move";};
     card.ondragend=(evt)=>{
       // Some browsers do not dispatch drop on a nested CSS grid after a
@@ -126,19 +143,19 @@ export default function(component) {
         const target=under&&under.closest(".cell");
         if(target&&!target.classList.contains("past")&&target.dataset.date&&target.dataset.period)
           send({type:"drop",task_id:t.task_id,date:target.dataset.date,
-                period:target.dataset.period,blocks});
+                period:target.dataset.period,blocks,duration_minutes:minutes});
       }
       dragged=null;
     };
-    card.onclick=(evt)=>{if(evt.target===grip)return;selected={task_id:t.task_id,blocks};
+    card.onclick=(evt)=>{if(evt.target===grip)return;selected={task_id:t.task_id,blocks,minutes};
       deck.querySelectorAll(".card").forEach(x=>x.classList.remove("selected"));card.classList.add("selected");};
     grip.onpointerdown=(evt)=>{
-      evt.stopPropagation();evt.preventDefault();const x=evt.clientX,old=blocks;
+      evt.stopPropagation();evt.preventDefault();const x=evt.clientX,old=minutes;
       grip.setPointerCapture(evt.pointerId);
-      grip.onpointermove=(move)=>{blocks=Math.max(1,Math.min(4,old+Math.round((move.clientX-x)/35)));update();};
+      grip.onpointermove=(move)=>{minutes=Math.max(30,Math.min(240,old+Math.round((move.clientX-x)/18)*30));update();};
       grip.onpointerup=()=>{grip.onpointermove=null;grip.onpointerup=null;
-        if(selected&&selected.task_id===t.task_id)selected.blocks=blocks;
-        if(old!==blocks)send({type:"resize",task_id:t.task_id,blocks});};
+        if(selected&&selected.task_id===t.task_id){selected.blocks=blocks;selected.minutes=minutes;}
+        if(old!==minutes)send({type:"resize",task_id:t.task_id,blocks,minutes});};
     };
     deck.append(card);
   });
@@ -149,28 +166,36 @@ export default function(component) {
     pos(h,i+2,1);
   });
   periods.forEach((p,k)=>{
-    pos(cell("period",p.label+"  "+String(p.hour).padStart(2,"0")+":00"),1,k+2);
+    pos(cell("period",p.label+"  "+String(p.hour).padStart(2,"0")+":00"),1,k*2+2,2);
     days.forEach((d,i)=>{
-      const past=(d.date+"T"+String(p.hour).padStart(2,"0")+":00")<=data.now_iso.slice(0,16);
+     for(const half of [0,1]){
+      const period=half?p.label+"+":p.label;
+      const stamp=d.date+"T"+String(p.hour).padStart(2,"0")+":"+(half?"30":"00");
+      const past=stamp<=data.now_iso.slice(0,16);
       const key=d.date+"|"+p.label;
       const c=cell("cell"+(past?" past":"")+
         (preferenceSet.has(key)?" preferred":"")+
         (preferenceMode&&!past?" paintable":""),"");
-      c.title=d.date+" "+p.time;
-      c.dataset.date=d.date;c.dataset.period=p.label;
-      c.ondragover=(e)=>{if(!past&&!preferenceMode){e.preventDefault();c.classList.add("over");}};
+      c.title=d.date+" "+String(p.hour).padStart(2,"0")+":"+(half?"30":"00");
+      c.dataset.date=d.date;c.dataset.period=period;
+      c.ondragover=(e)=>{if(!past&&!preferenceMode){e.preventDefault();
+        c.classList.add("over");}};
       c.ondragleave=()=>c.classList.remove("over");
       c.ondrop=(e)=>{e.preventDefault();c.classList.remove("over");
         if(past||preferenceMode)return;
         const transferred=e.dataTransfer.getData("text/plain");
         const transferBlocks=Number(e.dataTransfer.getData("application/x-classpulse-blocks"));
+        const transferMinutes=Number(e.dataTransfer.getData("application/x-classpulse-minutes"));
         const actualTask=transferred || (dragged&&dragged.task_id);
-        const actualBlocks=(Number.isInteger(transferBlocks)&&transferBlocks>=1&&transferBlocks<=4)
-          ?transferBlocks:(dragged?dragged.blocks:1);
+        const actualMinutes=(transferMinutes>=30&&transferMinutes<=240)
+          ?transferMinutes:(dragged&&dragged.minutes)||Math.max(1,transferBlocks)*60;
         if(actualTask){handledDrop=true;
-          send({type:"drop",task_id:actualTask,date:d.date,period:p.label,blocks:actualBlocks});}
+          send({type:"drop",task_id:actualTask,date:d.date,period,
+                blocks:Math.ceil(actualMinutes/60),duration_minutes:actualMinutes});}
       };
-      c.onclick=()=>{if(!past&&!preferenceMode&&selected)send({type:"drop",task_id:selected.task_id,date:d.date,period:p.label,blocks:selected.blocks});};
+      c.onclick=()=>{if(!past&&!preferenceMode&&selected)send({type:"drop",
+        task_id:selected.task_id,date:d.date,period,blocks:selected.blocks,
+        duration_minutes:selected.minutes});};
       if(preferenceMode&&!past){
         c.onpointerdown=(e)=>{
           if(e.button!==0&&e.pointerType!=="touch")return;
@@ -180,7 +205,8 @@ export default function(component) {
           c.classList.toggle("preferred",paintDesired);
         };
       }
-      pos(c,i+2,k+2);
+      pos(c,i+2,k*2+2+half);
+     }
     });
   });
   if(preferenceMode){
@@ -189,8 +215,9 @@ export default function(component) {
       const target=document.elementFromPoint(e.clientX,e.clientY);
       const c=target&&target.closest(".cell.paintable");
       if(!c||!root.contains(c))return;
-      const key=c.dataset.date+"|"+c.dataset.period;
-      paintMap.set(key,{date:c.dataset.date,period:c.dataset.period});
+      const label=c.dataset.period.replace("+","");
+      const key=c.dataset.date+"|"+label;
+      paintMap.set(key,{date:c.dataset.date,period:label});
       c.classList.toggle("preferred",paintDesired);
     };
     root.onpointerup=()=>{
@@ -205,18 +232,38 @@ export default function(component) {
     const idx=days.findIndex(d=>d.date===day);if(idx<0)return;
     const from=Math.max(8,Math.min(24,startHour)),to=Math.max(8,Math.min(24,endHour));
     if(to<=from)return;
-    const el=cell("event "+kind,text);el.title=text;
+    const el=cell("event "+kind+(meta.is_ai?" ai":""),text);el.title=text;
     if(kind==="study"){
       const btn=document.createElement("button");btn.textContent="×";btn.title="移回待排";btn.type="button";
       btn.onclick=(e)=>{e.stopPropagation();send({type:"unplace",task_id:meta.task_id});};
-      el.prepend(btn);el.draggable=true;el.ondragstart=(e)=>{
-        dragged={task_id:meta.task_id,blocks:meta.blocks||1};
+      el.prepend(btn);el.draggable=true;
+      const handle=cell("resize-handle","");
+      handle.title="直接拖動方塊底邊調整 30 分鐘";
+      el.append(handle);
+      handle.onpointerdown=(e)=>{
+        e.stopPropagation();e.preventDefault();const y=e.clientY;
+        const old=Number(meta.minutes)||Number(meta.blocks||1)*60;
+        handle.setPointerCapture(e.pointerId);
+        handle.onpointermove=(p)=>{
+          const minutes=Math.max(30,Math.min(240,old+Math.round((p.clientY-y)/20)*30));
+          el.style.gridRow=(Math.round((from-8)*2)+2)+" / span "+Math.max(1,minutes/30);
+        };
+        handle.onpointerup=(p)=>{
+          const minutes=Math.max(30,Math.min(240,old+Math.round((p.clientY-y)/20)*30));
+          handle.onpointermove=null;handle.onpointerup=null;
+          if(minutes!==old)send({type:"resize_scheduled",task_id:meta.task_id,minutes});
+        };
+      };
+      el.ondragstart=(e)=>{
+        const minutes=Number(meta.minutes)||Number(meta.blocks||1)*60;
+        dragged={task_id:meta.task_id,blocks:Math.ceil(minutes/60),minutes};
         e.dataTransfer.setData("text/plain",meta.task_id);
-        e.dataTransfer.setData("application/x-classpulse-blocks",String(meta.blocks||1));
+        e.dataTransfer.setData("application/x-classpulse-blocks",String(Math.ceil(minutes/60)));
+        e.dataTransfer.setData("application/x-classpulse-minutes",String(minutes));
         e.dataTransfer.effectAllowed="move";};
     }
     if(kind==="external"){el.title="點擊編輯，變更前會再次確認";el.onclick=()=>send({type:"external_edit",id:meta.id});}
-    pos(el,idx+2,from-8+2,to-from);
+    pos(el,idx+2,Math.round((from-8)*2)+2,Math.round((to-from)*2));
   };
   (data.courses||[]).forEach(c=>{
     days.forEach(d=>{
@@ -235,7 +282,7 @@ export default function(component) {
       event(d.date,begin,finish,e.title,"external",e);
     });
   });
-  (data.scheduled||[]).forEach(s=>event(s.day,s.hour,Math.min(24,s.hour+Number(s.blocks||1)),
+  (data.scheduled||[]).forEach(s=>event(s.day,s.hour,Math.min(24,s.hour+(Number(s.minutes)||60)/60),
     s.title+" · "+s.subject+"（"+(s.source==="manual"?"手排":"自動")+"）","study",s));
 }
 """
