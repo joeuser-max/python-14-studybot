@@ -74,6 +74,27 @@ def main():
                     expect(page.locator(".event.course")).to_have_count(14, timeout=25000)
                     expect(page.locator(".event.external")).to_have_count(3, timeout=25000)
 
+                    # LINE chat bubbles + guided quick replies must be fully actionable.
+                    page.get_by_role("tab", name="LINE 一日 Mock").click()
+                    expect(page.get_by_text("LINE 一日 Mock｜一整天的提醒、互動與回饋")).to_be_visible()
+                    expect(page.get_by_role("heading", name="LINE 虛擬對話｜按鈕引導式補筆記")).to_be_visible()
+                    page.get_by_role("button", name="補筆記", exact=True).click()
+                    page.get_by_role("button", name="星期一", exact=True).click()
+                    page.get_by_role("button", name="09:00–11:00｜固態物理").click()
+                    page.get_by_role("button", name="3", exact=True).click()
+                    page.get_by_label("輸入要傳送的課堂筆記或疑問").fill(
+                        "今天學到能帶圖，但還不熟悉費米能階與溫度的關係。")
+                    page.get_by_role("button", name="傳送筆記").click()
+                    expect(page.get_by_text("【Mock AI，並未呼叫模型】", exact=False)).to_be_visible()
+                    page.get_by_role("button", name="只保留筆記").click()
+                    expect(page.get_by_text("保留筆記，不建立新任務", exact=False)).to_be_visible()
+                    page.get_by_role("button", name="重設 LINE 虛擬對話").click()
+                    expect(page.get_by_role("button", name="補筆記", exact=True)).to_be_visible()
+                    expect(page.get_by_text("本日提醒事件時間軸（可選）")).to_be_visible()
+
+                    page.get_by_role("tab", name="行事曆與拖排").click()
+                    expect(page.locator(".cards .card")).to_have_count(8, timeout=25000)
+
                     # Resize a pending card by dragging its right-hand handle.
                     grip = page.locator(".cards .card").first.locator(".grip")
                     bounds = grip.bounding_box()
@@ -105,24 +126,6 @@ def main():
                     page.get_by_role("button", name="一鍵填滿剩餘任務").click()
                     expect(page.locator(".cards .card")).to_have_count(0, timeout=25000)
                     expect(page.locator(".event.study")).to_have_count(11)
-
-                    # LINE chat bubbles + guided quick replies must be fully actionable.
-                    page.get_by_role("tab", name="LINE 一日 Mock").click()
-                    expect(page.get_by_text("LINE 一日 Mock｜一整天的提醒、互動與回饋")).to_be_visible()
-                    expect(page.get_by_role("heading", name="LINE 虛擬對話｜按鈕引導式補筆記")).to_be_visible()
-                    page.get_by_role("button", name="補筆記", exact=True).click()
-                    page.get_by_role("button", name="星期一", exact=True).click()
-                    page.get_by_role("button", name="09:00–11:00｜固態物理").click()
-                    page.get_by_role("button", name="3", exact=True).click()
-                    page.get_by_label("輸入要傳送的課堂筆記或疑問").fill(
-                        "今天學到能帶圖，但還不熟悉費米能階與溫度的關係。")
-                    page.get_by_role("button", name="傳送筆記").click()
-                    expect(page.get_by_text("【Mock AI，並未呼叫模型】", exact=False)).to_be_visible()
-                    page.get_by_role("button", name="加入讀書任務").click()
-                    expect(page.get_by_text("已將此 Mock 建議加入待排盒", exact=False)).to_be_visible()
-                    page.get_by_role("button", name="重設 LINE 虛擬對話").click()
-                    expect(page.get_by_role("button", name="補筆記", exact=True)).to_be_visible()
-                    expect(page.get_by_text("本日提醒事件時間軸（可選）")).to_be_visible()
 
                     assert not errors, "JavaScript errors: " + "; ".join(errors)
                     print("通過：日週月檢視、五步引導、LINE 一日 Mock、七日拖排與一鍵填滿")
