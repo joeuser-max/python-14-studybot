@@ -200,3 +200,29 @@ def test_rich_demo_is_date_relative():
                <= today + timedelta(days=6) for e in fixture["external_events"])
     assert all(today < datetime.fromisoformat(p["scheduled_start"]).date()
                for p in fixture["plan"])
+
+
+def test_rich_demo_line_mock_default_day_has_many_events():
+    from mock_day import one_day_timeline, recommended_demo_day
+
+    fixture = sample_records(NOW)
+    today = NOW.date()
+    days = [today + timedelta(days=offset) for offset in range(7)]
+    tasks = {t["task_id"]: t for t in fixture["tasks"]}
+    slots = {a["availability_id"]: a for a in fixture["availability"]}
+    scheduled = []
+    for entry in fixture["plan"]:
+        slot = slots[entry["availability_id"]]
+        start = datetime.fromisoformat(entry["scheduled_start"])
+        scheduled.append({
+            "task_id": entry["task_id"],
+            "title": tasks[entry["task_id"]]["title"],
+            "day": slot["date"],
+            "start": start.isoformat(),
+            "end": (start + timedelta(minutes=entry["scheduled_minutes"])).isoformat(),
+        })
+    chosen = recommended_demo_day(days, fixture["events"], scheduled)
+    timeline = one_day_timeline(chosen, fixture["events"], scheduled)
+    assert len(timeline) >= 8
+    assert any(e["kind"] == "line_note" for e in timeline)
+    assert all(e["at"].date() == chosen for e in timeline)
