@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from datetime import date, datetime, time, timedelta
+from html import escape as escape_html
 from uuid import uuid4
 
 import streamlit as st
@@ -563,9 +564,47 @@ with pages[2]:
                 step_number(chat_state["stage"]) / 6,
                 text=f"LINE 補筆記引導｜第 {step_number(chat_state['stage'])}／6 步",
             )
+            st.markdown("""
+            <style>
+            .classpulse-line-phone {
+              background:#dce9f2; border:1px solid #b8c8d4; border-radius:15px;
+              padding:12px; max-height:430px; overflow-y:auto; margin:5px 0 13px;
+              font-family:system-ui,sans-serif;
+            }
+            .classpulse-line-phone .chat-head {
+              font-size:12px;font-weight:700;color:#40556b;text-align:center;
+              border-bottom:1px solid #c0d1da;padding:3px 0 10px;margin-bottom:10px;
+            }
+            .classpulse-line-phone .chat-row {display:flex;margin:8px 0;clear:both}
+            .classpulse-line-phone .chat-row.bot {justify-content:flex-start}
+            .classpulse-line-phone .chat-row.student {justify-content:flex-end}
+            .classpulse-line-phone .chat-bubble {
+              border-radius:12px;padding:10px 12px;max-width:83%;
+              font-size:13px;line-height:1.55;color:#253544;overflow-wrap:anywhere;
+              white-space:normal;box-shadow:0 1px 2px #22334414;
+            }
+            .classpulse-line-phone .bot .chat-bubble {
+              background:#fff;border-top-left-radius:3px
+            }
+            .classpulse-line-phone .student .chat-bubble {
+              background:#a9e97d;border-top-right-radius:3px
+            }
+            </style>
+            """, unsafe_allow_html=True)
+            chat_rows = []
             for message in chat_state["messages"]:
-                with st.chat_message(message["role"]):
-                    st.write(message["text"])
+                side = "student" if message["role"] == "user" else "bot"
+                safe_text = escape_html(message["text"]).replace("\\n", "<br>")
+                chat_rows.append(
+                    f'<div class="chat-row {side}"><div class="chat-bubble">'
+                    f'{safe_text}</div></div>'
+                )
+            st.markdown(
+                '<div class="classpulse-line-phone">'
+                '<div class="chat-head">ClassPulse｜LINE 虛擬聊天（非真實訊息）</div>'
+                + "".join(chat_rows) + '</div>',
+                unsafe_allow_html=True,
+            )
             if chat_state["stage"] == "note":
                 with st.form("line_mock_chat_note_form", clear_on_submit=False):
                     note_text = st.text_area(
