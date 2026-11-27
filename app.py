@@ -11,6 +11,7 @@ from ai_assistant import AIError, ai_is_configured, analyze_learning_records
 from demo_data import mock_learning_suggestions, seed_demo_data
 from calendar_views import overview_events, view_options
 from mock_day import one_day_timeline, recommended_demo_day
+from line_mock_chat import start_chat, choices as mock_chat_choices, advance_chat, step_number
 from exporter import export_learning_markdown
 from storage import (
     DataError, TZ, add_availabilities, add_event, add_task_to_storage,
@@ -45,6 +46,7 @@ if demo_mode:
     if st.button("重設展示資料", help="還原預設課程、任務、範例筆記與提醒設定"):
         seed_demo_data(reset=True)
         st.session_state.pop("demo_ai_result", None)
+        st.session_state.pop("line_mock_chat_state", None)
         st.rerun()
 
 
@@ -525,8 +527,94 @@ with pages[2]:
             st.info(event["message"])
             st.caption("上面的通知只顯示在瀏覽器，不代表 LINE API 已傳送成功。")
         st.divider()
+
+        st.subheader("LINE 虛擬對話｜按鈕引導式補筆記")
+        st.caption("這是可操作的聊天室 Mock。選擇「補筆記 → 星期 → 課次 → 進度 → 筆記 → AI 建議」；"
+                   "訊息只會存進展示資料夾，不連結真實 LINE。")
+        chat_key = "line_mock_chat_state"
+        chat_state = st.session_state.get(chat_key)
+        if not chat_state or chat_state.get("day") != mock_day.isoformat():
+            chat_state = start_chat(mock_day, courses)
+            st.session_state[chat_key] = chat_state
+
+        def submit_line_mock(value: str) -> None:
+            try:
+                next_chat, effect = advance_chat(
+                    st.session_state[chat_key], value, courses)
+                if effect and effect["type"] == "save_feedback":
+                    new_feedback_id = create_id("feedback")
+                    saved = save_feedback({
+                        "feedback_id": new_feedback_id, "user_id": USER_ID,
+                        "event_id": effect["event_id"],
+                        "class_date": effect["class_date"],
+                        "received_at": datetime.now(TZ).isoformat(timespec="seconds"),
+                        "content": effect["content"], "progress": effect["progress"],
+                        "source": "demo", "reminder_id": "",
+                        "webhook_event_id": create_id("mock_chat_event"),
+                    })
+                    if not saved:
+                        raise DataError("這則模擬筆記已存在，未重複寫入")
+                    next_chat["saved_feedback_id"] = new_feedback_id
+                elif effect and effect["type"] == "add_task":
+                    new_task = {
+                        "task_id": create_id("task"),
+                        "user_id": USER_ID,
+                        "subject": effect["subject"],
+                        "title": effect["title"],
+                        "deadline": (
+                            date.fromisoformat(effect["class_date"]) + timedelta(days=7)
+                        ).isoformat(),
+                        "estimated_minutes": 60,
+                        "status": "pending",
+                        "preferred_availability_id": "",
+                        "source": "mock_ai_confirmed",
+                        "source_feedback_id": effect["source_feedback_id"],
+                    }
+                    add_task_to_storage(new_task)
+                st.session_state[chat_key] = next_chat
+                st.rerun()
+            except (DataError, KeyError, ValueError) as exc:
+                st.error(f"LINE Mock 無法完成本步驟：{exc}")
+
+        with st.container(border=True):
+            st.progress(
+                step_number(chat_state["stage"]) / 6,
+                text=f"LINE 補筆記引導｜第 {step_number(chat_state['stage'])}／6 步",
+            )
+            for message in chat_state["messages"]:
+                with st.chat_message(message["role"]):
+                    st.write(message["text"])
+            if chat_state["stage"] == "note":
+                with st.form("line_mock_chat_note_form", clear_on_submit=False):
+                    note_text = st.text_area(
+                        "輸入要傳送的課堂筆記或疑問",
+                        key="line_mock_chat_note",
+                        placeholder="例如：今天學到閉迴路傳遞函數，但穩定度判斷還不熟。",
+                    )
+                    if st.form_submit_button("傳送筆記"):
+                        submit_line_mock(note_text)
+            else:
+                menu = mock_chat_choices(chat_state, courses)
+                if menu:
+                    cols = st.columns(min(4, len(menu)))
+                    for index, (value, label) in enumerate(menu):
+                        with cols[index % len(cols)]:
+                            if st.button(
+                                label, key=f"line_chat_option_{chat_state['stage']}_{index}",
+                                use_container_width=True,
+                            ):
+                                submit_line_mock(value)
+            if chat_state["stage"] not in {"menu", "finished"}:
+                if st.button("取消這次補筆記", key="line_mock_chat_cancel"):
+                    submit_line_mock("取消")
+            if st.button("重設 LINE 虛擬對話", key="line_mock_chat_restart"):
+                st.session_state[chat_key] = start_chat(mock_day, courses)
+                st.rerun()
+        st.caption("虛擬對話中的 AI 建議為明確標示的 Mock；"
+                   "只有按「加入讀書任務」才會把任務放進待排盒，不會自動填入日曆。")
+
     if demo_mode:
-        with st.expander("模擬 LINE 課後提醒與補筆記", expanded=True):
+        with st.expander("模擬 LINE 課後提醒與補筆記｜快速填寫（舊版）", expanded=False):
             st.caption("以下訊息僅為網頁展示，不會送到 LINE，也不需要 Webhook／API Key。")
             if any(c.get("weekday") == mock_day.isoweekday() for c in courses):
                 demo_course_by_id = {c["event_id"]: c for c in courses if c.get("weekday") == mock_day.isoweekday()}
