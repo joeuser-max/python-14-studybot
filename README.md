@@ -2,6 +2,8 @@
 
 **V2 架構與驗收邊界：**[七日規劃板／AI 教練／匿名訓練模板設計說明](docs/architecture-v2.md)。
 
+**三分鐘期末 Demo：**[實際操作腳本、範例 ICS 與 Mock AI 驗收](docs/demo-v2.md)。
+
 
 這份手冊從第一次安裝開始，帶你測試課表、讀書排程、進度／Markdown 匯出，以及選擇性 LINE 整合。
 
