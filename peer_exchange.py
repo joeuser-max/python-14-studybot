@@ -94,4 +94,7 @@ def import_profile(raw: bytes) -> dict:
         "name": name, "sessions_per_week": count,
         "preferred_periods": periods, "maximum_blocks": blocks,
         "goal": goal, "source": "peer_uploaded_unverified",
+        "claimed_completion_rate": evidence.get("completion_rate"),
+        "claimed_checkin_rate": evidence.get("checkin_rate"),
+        "benchmark_verified": False,
     }
