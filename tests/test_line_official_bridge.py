@@ -345,3 +345,112 @@ def test_personal_checkin_does_not_intercept_notes_or_overwrite_moved_plan(setup
     assert "已變更" in replies[-1]
     assert storage.load_json(storage.data_path("plan")) == saved
     assert not forwarded
+
+
+def _prepare_class_push(setup, monkeypatch):
+    from datetime import datetime, timedelta
+    import line_bot
+    import line_personal_class_worker as worker
+    monkeypatch.setenv("CLASSPULSE_FRIEND_NOTE_SYNC", "1")
+    monkeypatch.setenv("CLASSPULSE_FRIEND_CLASS_PUSH", "1")
+    client, replies, forwarded = setup
+    monkeypatch.setattr(line_bot, "reply_line_message",
+                        lambda token, text, choices=None: replies.append(text))
+    def msg(eid, text):
+        return event(eid, message={"type": "text", "text": text})
+    assert post(client, [msg("class-open", "開啟網頁")]).status_code == 200
+    uid = users()[0]["user_id"]
+    now = datetime.now(storage.TZ).replace(hour=10, minute=5, second=0, microsecond=0)
+    class FixedClock(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return now.astimezone(tz) if tz else now.replace(tzinfo=None)
+    monkeypatch.setattr(bridge, "datetime", FixedClock)
+    course = {"event_id": "real-class-push", "user_id": uid, "event_type": "class",
+              "title": "CLASS_PUSH_TEST", "weekday": now.isoweekday(),
+              "start_time": "09:00", "end_time": "10:00", "offset_minutes": 5,
+              "enabled": True, "prompt_template": "class_feedback"}
+    storage.update_json(storage.data_path("events"), lambda rows: rows+[course])
+    pushes = []
+    monkeypatch.setattr(worker, "push_line_message",
+                        lambda user, row, text: pushes.append((user, row, text)) or True)
+    options = worker.occurrences(now)
+    selected = next(s for s in options if s["event_id"] == course["event_id"])
+    return client, replies, forwarded, msg, worker, now, uid, course, selected, pushes
+
+
+def test_class_push_timing_dedup_and_busy_conversation(setup, monkeypatch):
+    from datetime import timedelta
+    import line_bot
+    client, replies, forwarded, msg, worker, now, uid, course, selected, pushes = _prepare_class_push(setup, monkeypatch)
+    assert worker.deliver_once(selected, now-timedelta(seconds=1)) == "waiting"
+    assert not pushes
+    original = {"user_id": uid, "stage": "weekday",
+                "expires_at": (now+timedelta(minutes=10)).isoformat()}
+    line_bot._set_pending(original)
+    assert worker.deliver_once(selected, now) == "busy"
+    assert line_bot._pending_for(uid, now) == original and not pushes
+    line_bot._remove_pending(uid)
+    assert worker.deliver_once(selected, now) == "sent"
+    assert worker.deliver_once(selected, now+timedelta(seconds=15)) == "sent"
+    assert len(pushes) == 1 and "CLASS_PUSH_TEST" in pushes[0][2]
+    pending = line_bot._pending_for(uid, now)
+    assert pending["stage"] == "progress" and pending["event_id"] == course["event_id"]
+    assert pending["class_date"] == now.date().isoformat()
+
+
+def test_class_push_skips_seeded_disabled_and_expired_occurrences(setup, monkeypatch):
+    from datetime import timedelta
+    client, replies, forwarded, msg, worker, now, uid, course, selected, pushes = _prepare_class_push(setup, monkeypatch)
+    assert all(not s["course"].get("demo_seed_version") for s in worker.occurrences(now))
+    storage.update_json(storage.data_path("events"), lambda rows: [
+        {**r, "enabled": False} if r["event_id"] == course["event_id"] else r for r in rows])
+    assert worker.deliver_once(selected, now) == "invalid"
+    storage.update_json(storage.data_path("events"), lambda rows: [
+        {**r, "enabled": True} if r["event_id"] == course["event_id"] else r for r in rows])
+    assert worker.deliver_once(selected, now+timedelta(minutes=16)) == "invalid"
+    assert not pushes
+
+
+@pytest.mark.parametrize("consent", [False, True])
+def test_signed_class_push_note_preserves_course_and_ai_choice(setup, monkeypatch, consent):
+    import line_bot
+    monkeypatch.setenv("CLASSPULSE_FRIEND_AI_SYNC", "1")
+    monkeypatch.setenv("AI_PROVIDER", "gemini")
+    monkeypatch.setenv("GEMINI_API_KEY", "offline")
+    monkeypatch.setenv("GEMINI_MODEL", "offline")
+    client, replies, forwarded, msg, worker, now, uid, course, selected, pushes = _prepare_class_push(setup, monkeypatch)
+    calls = []
+    def analyze(note, title):
+        calls.append((note["content"], title))
+        return {"summary": "測試摘要", "key_points": ["測試重點"],
+                "unresolved_questions": ["如何判斷穩定？"], "topic_tags": ["控制"],
+                "suggested_task": "複習穩定", "estimated_minutes": 30}
+    monkeypatch.setattr(line_bot, "organize_class_feedback", analyze)
+    assert worker.deliver_once(selected, now) == "sent"
+    assert post(client, [msg("class-rating", "3")]).status_code == 200
+    assert "Google Gemini API" in replies[-1] and not calls
+    assert post(client, [msg("class-consent", "同意AI整理" if consent else "只儲存筆記")]).status_code == 200
+    assert "本堂課的筆記" in replies[-1] and not calls
+    before = len(storage.load_json(storage.data_path("tasks")))
+    assert post(client, [msg("class-note", "不懂穩定判斷")]).status_code == 200
+    notes = [n for n in storage.load_json(storage.data_path("feedback"))
+             if n.get("content") == "不懂穩定判斷"]
+    assert len(notes) == 1
+    note = notes[0]
+    assert note["event_id"] == course["event_id"] and note["class_date"] == now.date().isoformat()
+    assert note["user_id"] == uid and note["progress"] == 3
+    assert note["reminder_id"] == selected["reminder_id"]
+    assert bool(calls) == consent
+    if consent:
+        assert calls == [("不懂穩定判斷", "CLASS_PUSH_TEST")]
+        assert note["ai_analysis"]["summary"] == "測試摘要"
+        assert len(storage.load_json(storage.data_path("tasks"))) == before
+        assert post(client, [msg("class-accept", "加入讀書任務")]).status_code == 200
+        tasks = [t for t in storage.load_json(storage.data_path("tasks"))
+                 if t.get("source_feedback_id") == note["feedback_id"]]
+        assert len(tasks) == 1 and tasks[0]["estimated_minutes"] == 30
+    else:
+        assert not note.get("ai_analysis")
+        assert len(storage.load_json(storage.data_path("tasks"))) == before
+    assert not forwarded
