@@ -186,3 +186,51 @@ raw private classroom notes in GitHub comments or screenshots.
 - @Onlynotonly reported all 40 targeted tests passed locally.
 - Full CI run 46063573670 on a6aaabc failed: 143 passed, 1 failed. The check-in scheduler built owner-qualified maps but still looked up bare IDs, returning zero valid due check-ins. Fixed both task and slot lookups; unambiguous legacy ownerless plan compatibility retained. Added two positive regression cases covering valid start and check-in reminders (explicit and legacy owner).
 - Full CI must pass before public identity integration is accepted. No deployment or feature flag changes.
+
+## Step 15 — Acceptance
+
+- @Onlynotonly reported full local `146 passed` after the check-in correction.
+- GitHub Actions run 46063747162 passed at 60ce68b. Offline acceptance complete.
+
+## Step 16 — LINE Login (private staging implementation; verification pending)
+
+- Use the LINE Login web authorization-code flow, not LIFF SDK. OAuth
+  state and browser cookie are bound to a one-time, ten-minute server-side
+  login attempt; nonce and S256 PKCE are checked. Flask exchanges code for
+  token and calls LINE's ID token verification endpoint (issuer, channel,
+  expiry, nonce and real LINE subject checked). Do not trust client-decoded
+  tokens or profile IDs. Only unique existing seeded independent users can
+  sign in; legacy demo_user_001 and unknown or pending users are rejected.
+- A random opaque session cookie (Secure, HttpOnly, SameSite=Lax, host-only)
+  is returned, never included in redirect URL. Only its hash is stored.
+  Session expires within one hour or token expiry, whichever comes first.
+  Reruns resolve the owner from cookie and existing user record; logout
+  revokes the session server-side. New verified owner clears UI session state.
+- Staging UI uses personal seeded data with mock AI behavior and locked
+  reminder settings; it cannot reset shared fixtures or enable LINE pushes.
+  The LINE user status remains seeded_pending_auth until later rollout.
+- Required private HTTPS reverse proxy: same origin for Streamlit and Flask;
+  /auth/line/* to Flask, / and Streamlit websocket/static routes to Streamlit.
+  Keep both backend ports private, preserve Host, use HTTPS, keep CSRF/CORS
+  enabled, redact callback query strings/cookies from access logs, rate-limit
+  auth routes, and prevent session/store access from web static paths.
+  Both processes need the same persistent DATA_DIR and server environment.
+- LINE Developers: create a LINE Login channel under the SAME provider as
+  the existing Messaging API channel (otherwise user IDs differ).
+  Register https://YOUR-STAGING-HOST/auth/line/callback as callback URL.
+  Configure only on the server (not committed):
+  CLASSPULSE_LINE_WEB_STAGING=1, CLASSPULSE_WEB_ORIGIN=https://YOUR-STAGING-HOST,
+  LINE_LOGIN_CHANNEL_ID, LINE_LOGIN_CHANNEL_SECRET.
+  Keep flags off until private staging setup is reviewed. Public mode still
+  fails closed even if staging is enabled. Do not expose legacy default UI.
+- Server runtime web_auth.json contains hashed session/browser/state IDs,
+  short-lived nonce and PKCE verifier; restrict filesystem access. No
+  LINE access token or ID token is persisted. No new dependencies.
+- Official reference:
+  https://developers.line.biz/en/docs/line-login/integrate-line-login/
+  https://developers.line.biz/en/docs/line-login/verify-id-token/
+  https://developers.line.biz/en/docs/messaging-api/getting-user-ids/
+- LIFF in-app browser flow, real LINE callback, HTTPS reverse proxy,
+  multi-device session behavior, rate limits and live end-to-end remain
+  unverified. LINE web auth inside LIFF browser is not guaranteed by LINE;
+  use an external browser for this first staging route.
