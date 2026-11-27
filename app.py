@@ -501,16 +501,14 @@ with pages[1]:
         st.write(f"目前已排 **{len(board_payload(USER_ID)['scheduled'])}** 項，"
                  f"待排 **{len(board_payload(USER_ID)['tasks'])}** 項。")
     elif current == 3:
-        st.info("只在你按下按鈕時，系統才依 Deadline、時長及衝突規則，"
-                "填入其餘待排任務。手動固定時段不會被重新安排。")
-        if st.button("一鍵填滿剩餘任務", key="guide_fill_remaining"):
-            try:
-                result = fill_remaining(USER_ID)
-                st.success(f"新增 {len(result['placed'])} 個排程；"
-                           f"{len(result['skipped'])} 項仍沒有合適空格。")
-                st.rerun()
-            except (DataError, ValueError) as exc:
-                st.error(str(exc))
+        st.info("此步不直接執行排程：請按下方按鈕啟動綠色偏好畫筆，"
+                "再切換到「行事曆與拖排 → 七日拖排」，自行在合法空格畫綠，"
+                "最後按「確認偏好並一鍵安排」。未畫綠的合法空檔仍可使用，"
+                "任何既有手排都不會被移動。")
+        if st.button("開始設定綠色偏好（尚不自動排程）", key="guide_fill_remaining"):
+            st.session_state["classpulse_preference_mode"] = True
+            st.success("已進入偏好畫筆模式，請回到上方「行事曆與拖排」。")
+            st.rerun()
     else:
         st.info("切換到上方「LINE 一日 Mock」：選擇一天，逐事件查看課程提醒、"
                 "讀書開始及結束回報，還能提交模擬課堂筆記。"
