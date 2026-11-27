@@ -146,8 +146,15 @@ def main():
                     expect(page.locator(".cards .card")).to_have_count(7, timeout=25000)
                     expect(page.locator(".event.study")).to_have_count(4)
 
-                    # Explicit fill allocates the other tasks; it does not move the four existing plans.
-                    page.get_by_role("button", name="一鍵填滿剩餘任務").click()
+                    # 一鍵安排先顯示綠色畫筆，不得立刻填入其他待排任務。
+                    page.get_by_role("button", name="一鍵安排：標記綠色偏好").click()
+                    expect(page.locator(".cards .card")).to_have_count(7, timeout=25000)
+                    expect(page.get_by_role("button", name="確認偏好並一鍵安排")).to_be_visible()
+                    # T+2 / 10:00 is an empty slot. Click to paint an availability∩preference target.
+                    page.locator(".matrix .cell").nth(16).click()
+                    expect(page.locator(".matrix .cell.preferred")).to_have_count(1, timeout=25000)
+                    # Confirm triggers automatic fill; manually placed task stays untouched.
+                    page.get_by_role("button", name="確認偏好並一鍵安排").click()
                     expect(page.locator(".cards .card")).to_have_count(0, timeout=25000)
                     expect(page.locator(".event.study")).to_have_count(11)
 
