@@ -91,9 +91,12 @@ def create_app():
                         continue
                 # No user identifiers or tokens in the URL. Login still verifies identity.
                 if isinstance(token, str) and token:
-                    reply_line_message(token, "你的個人 ClassPulse Demo 已建立。請使用外部瀏覽器開啟：\n" + origin
-                                       + ("\n使用 LINE 登入即可開始使用。" if internal else
-                                          "\n目前為私人測試，需輸入測試密碼及 LINE 登入。"))
+                    if internal:
+                        reply_line_message(token, "你的個人 ClassPulse Demo 已準備完成。點擊即可開啟：\n"
+                                           + origin + "/auth/line/start?openExternalBrowser=1")
+                    else:
+                        reply_line_message(token, "你的個人 ClassPulse Demo 已建立。請使用外部瀏覽器開啟：\n" + origin
+                                           + "\n目前為私人測試，需輸入測試密碼及 LINE 登入。")
                 _mark_processed(eid, datetime.now(storage.TZ))
         return {"ok": True}
 
