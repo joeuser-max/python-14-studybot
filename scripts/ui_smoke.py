@@ -166,6 +166,20 @@ def main():
                     expect(page.locator(".cards .card")).to_have_count(7, timeout=25000)
                     expect(page.locator(".event.study")).to_have_count(4)
 
+                    # Resize an ALREADY placed block using its bottom drag handle,
+                    # not by moving it back to pending. The task count stays four.
+                    placed_handle=page.locator(".event.study").first.locator(".resize-handle")
+                    expect(placed_handle).to_be_visible(timeout=25000)
+                    hb=placed_handle.bounding_box()
+                    assert hb is not None
+                    hx,hy=hb["x"]+hb["width"]/2,hb["y"]+hb["height"]/2
+                    page.mouse.move(hx,hy)
+                    page.mouse.down()
+                    page.mouse.move(hx,hy+25,steps=6)
+                    page.mouse.up()
+                    expect(page.locator(".event.study")).to_have_count(4,timeout=25000)
+                    assert not page.get_by_text("規劃操作未儲存：", exact=False).all_text_contents()
+
                     # 一鍵安排先顯示綠色畫筆，不得立刻填入其他待排任務。
                     page.get_by_role("button", name="一鍵安排：標記綠色偏好").click()
                     expect(page.locator(".cards .card")).to_have_count(7, timeout=25000)
