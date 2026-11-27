@@ -1,5 +1,8 @@
 # ClassPulse｜A／B 整合版操作手冊
 
+**V2 架構與驗收邊界：**[七日規劃板／AI 教練／匿名訓練模板設計說明](docs/architecture-v2.md)。
+
+
 這份手冊從第一次安裝開始，帶你測試課表、讀書排程、進度／Markdown 匯出，以及選擇性 LINE 整合。
 
 - **A 功能**：Streamlit 介面、JSON 資料、安全儲存、回覆統計、Markdown 匯出、經同意後的 AI 筆記整理。
