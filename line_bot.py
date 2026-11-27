@@ -203,8 +203,15 @@ def _save_quick_note(event: dict, user_id: str, now: datetime, text: str) -> dic
 
 def _notes_reply(user_id: str, query: str = "") -> str:
     all_notes = load_json(data_path("feedback"))
-    matched = search_learning_notes(all_notes, user_id, topic=query) if query else [
-        n for n in all_notes if n.get("user_id") == user_id
+    # LINE 自然語言查詢須包含筆記全文與主題標籤，不能套用
+    # V2「只依標籤搜尋」的網頁舊邏輯。
+    owned = [n for n in all_notes if n.get("user_id") == user_id]
+    needle = query.strip().casefold()
+    matched = [
+        n for n in owned
+        if not needle or needle in str(n.get("content") or "").casefold()
+        or any(needle in str(tag).casefold() for tag in
+               (n.get("topic_tags") if isinstance(n.get("topic_tags"), list) else []))
     ]
     if not matched:
         return "找不到符合條件的筆記；可以傳送「筆記 內容」、PDF、DOCX 或 TXT 新增。"
