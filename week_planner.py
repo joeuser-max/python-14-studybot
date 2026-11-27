@@ -148,8 +148,11 @@ def place_manual(user_id: str, task_id: str, day: str, period: str,
                                    and row.get("task_id") == task_id)
     ] + [entry])
     # 視覺卡片調整的工時就是最新預估；從此無需數字輸入框。
-    update_task({**task, "estimated_minutes": minutes,
-                 "preferred_availability_id": ""})
+    modified = {**task, "estimated_minutes": minutes,
+                "preferred_availability_id": ""}
+    if task.get("remaining_minutes") is not None:
+        modified["remaining_minutes"] = minutes
+    update_task(modified)
     return entry
 
 
@@ -165,8 +168,11 @@ def set_task_blocks(user_id: str, task_id: str, blocks: int) -> None:
     if any(p.get("task_id") == task_id and p.get("status") == "scheduled"
            for p in plan):
         raise DataError("已排任務請先移回待排區，再拉長或縮短")
-    update_task({**task, "estimated_minutes": blocks * 60,
-                 "preferred_availability_id": ""})
+    modified = {**task, "estimated_minutes": blocks * 60,
+                "preferred_availability_id": ""}
+    if task.get("remaining_minutes") is not None:
+        modified["remaining_minutes"] = blocks * 60
+    update_task(modified)
 
 
 def unplace(user_id: str, task_id: str) -> None:
