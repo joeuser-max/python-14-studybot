@@ -24,7 +24,7 @@ from week_planner import (
 from week_board import render_week_board
 from calendar_sync import preview_ics, import_ics, export_week_ics, edit_imported_event, conflicts_with_existing_plan
 from study_metrics import personal_metrics, BENCHMARK_TEMPLATES, anonymized_benchmark
-from study_coach import CoachError, coach_with_gemini
+from study_coach import CoachError, coach_with_gemini, mock_coach_for_demo
 from peer_exchange import PeerProfileError, export_profile, import_profile
 
 USER_ID = "demo_user_001"  # MVP：單一測試使用者；正式多人版須加入登入機制
@@ -633,7 +633,12 @@ with pages[2]:
         profile = anonymized_benchmark(metric, template)
         st.json(profile, expanded=False)
         if demo_mode:
-            st.info("目前為展示模式；不呼叫 Gemini API，以上為可供 AI 適配的規則模板。")
+            st.info("展示模式僅產生【Mock 模型回應】，可測試 JSON Schema、"
+                    "本地衝突檢查與確認後排入；不呼叫 Gemini API。")
+            if st.button("體驗教練產生候選方案（Mock，不呼叫 API）",
+                         key="demo_coach_generate"):
+                st.session_state["coach_suggestions"] = mock_coach_for_demo(
+                    board_payload(USER_ID), template, USER_ID)
         else:
             consent_gemini = st.checkbox(
                 "我同意本次將待排任務名稱、課程時段、外部行程時段與彙總指標送至 Google Gemini API；"
@@ -649,27 +654,27 @@ with pages[2]:
                     st.success("已取得模型建議；沒有自動修改任何排程")
                 except (CoachError, DataError, ValueError) as exc:
                     st.error(str(exc))
-            coach_result = st.session_state.get("coach_suggestions")
-            if coach_result:
-                st.write(coach_result["summary"])
-                if coach_result.get("rejected"):
-                    st.warning(f"已由本地規則拒絕 {len(coach_result['rejected'])} 項無效或衝突建議")
-                if not coach_result["actions"]:
-                    st.info("暫無可用的 AI 排程建議")
-                for suggestion in coach_result["actions"]:
-                    with st.container(border=True):
-                        st.write(f"**{suggestion['title']}**｜{suggestion['date']} "
-                                 f"{suggestion['period']} 節起｜{suggestion['blocks']} 節")
-                        st.caption(suggestion["reason"])
-                        if st.button("確認並排入這項 AI 建議",
-                                     key=f"coach_accept_{suggestion['task_id']}_{suggestion['date']}"):
-                            try:
-                                place_manual(USER_ID, suggestion["task_id"], suggestion["date"],
-                                             suggestion["period"], suggestion["blocks"])
-                                st.session_state["coach_suggestions"] = None
-                                st.rerun()
-                            except (DataError, KeyError, ValueError) as exc:
-                                st.error(f"無法接受 AI 建議：{exc}")
+        coach_result = st.session_state.get("coach_suggestions")
+        if coach_result:
+            st.write(coach_result["summary"])
+            if coach_result.get("rejected"):
+                st.warning(f"已由本地規則拒絕 {len(coach_result['rejected'])} 項無效或衝突建議")
+            if not coach_result["actions"]:
+                st.info("暫無可用的 AI 排程建議")
+            for suggestion in coach_result["actions"]:
+                with st.container(border=True):
+                    st.write(f"**{suggestion['title']}**｜{suggestion['date']} "
+                             f"{suggestion['period']} 節起｜{suggestion['blocks']} 節")
+                    st.caption(suggestion["reason"])
+                    if st.button("確認並排入這項 AI 建議",
+                                 key=f"coach_accept_{suggestion['task_id']}_{suggestion['date']}"):
+                        try:
+                            place_manual(USER_ID, suggestion["task_id"], suggestion["date"],
+                                         suggestion["period"], suggestion["blocks"])
+                            st.session_state["coach_suggestions"] = None
+                            st.rerun()
+                        except (DataError, KeyError, ValueError) as exc:
+                            st.error(f"無法接受 AI 建議：{exc}")
     st.subheader("可搜尋筆記庫")
     library_courses = own(records["events"])
     library_notes = own(records["feedback"])
