@@ -97,3 +97,28 @@ UI still uses a hardcoded user ID.
 **Security:** never commit or post Channel Secret, Channel Access Token,
 LINE User IDs from real devices, ngrok Authtoken, binding codes, or
 raw private classroom notes in GitHub comments or screenshots.
+
+## Step 12.2 — Local acceptance (2026-11-28, Asia/Taipei)
+
+- @Onlynotonly synchronized Mac branch `feature/line-friend-demo` to
+  `514d0f6` by saving the redundant local .gitignore edit in a stash,
+  then fast-forwarding. Runtime data remains ignored.
+- Python 3.12.2 confirmed. User reported registration test passed; exact
+  pytest count and duration were not supplied.
+
+## Step 13 — Signed follow registration (implementation; verification pending)
+
+- `LINE_FRIEND_DEMO_ENABLED=1` opts into the new follow route;
+  absent/other values retain the old binding flow.
+- A signed personal follow registers or resolves exactly one account.
+  Invalid IDs, group/room and standby follow events do not register.
+  Storage failures are not marked processed.
+- Existing legacy users retain their IDs and preferences. An atomic
+  binding guard rejects a LINE ID already linked to a separate account.
+- Pending users receive a truthful status response and cannot enter
+  text/file/binding flows, even after the switch is disabled.
+- Offline Webhook tests use fake HMAC credentials, temporary storage and
+  mock reply calls. No real LINE credentials or runtime data are committed.
+- Do not enable the switch on the public tunnel yet. CI and local tests,
+  individual demo seeding, web authorization and two-phone E2E remain
+  required. Flask/ngrok settings remain unchanged.
