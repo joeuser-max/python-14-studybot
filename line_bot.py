@@ -3,6 +3,9 @@ import hashlib
 import hmac
 import json
 import os
+
+from line_note_files import clean_filename, download_line_file, extract_text
+from note_attachments import save_pdf_attachment
 from datetime import date, datetime, timedelta
 from zoneinfo import ZoneInfo
 
@@ -20,6 +23,7 @@ from storage import (
     load_json,
     record_task_progress,
     save_feedback as storage_save_feedback,
+    search_learning_notes,
     update_feedback_analysis,
     update_json,
 )
@@ -170,6 +174,78 @@ def _remove_pending(user_id: str) -> None:
         data_path("pending_notes"),
         lambda rows: [row for row in rows if row.get("user_id") != user_id],
     )
+
+
+def _save_quick_note(event: dict, user_id: str, now: datetime, text: str) -> dict:
+    """LINE-first 快速收件箱：不用重選課次、不猜測筆記科目。
+
+    課程歸屬可到 V2 中控台確認；不自動產生排程或呼叫第三方模型。
+    """
+    note = text.strip()
+    if not 2 <= len(note) <= 50_000:
+        raise DataError("筆記應有 2–50,000 字")
+    feedback = {
+        "feedback_id": create_id("feedback"), "user_id": user_id,
+        "event_id": "inbox", "class_date": now.date().isoformat(),
+        "received_at": now.isoformat(timespec="seconds"),
+        "content": note, "progress": None, "topic_tags": [],
+        "source": "selected", "reminder_id": "",
+        "webhook_event_id": event.get("webhookEventId",""),
+        "attachment_filename": event.get("_attachment_filename", ""),
+    }
+    result = save_feedback(feedback)
+    if result["error"]:
+        raise DataError(result["error"])
+    if result["saved"] and event.get("_attachment_content") is not None:
+        save_pdf_attachment(user_id, feedback["feedback_id"], event["_attachment_content"])
+    return {**result, "feedback_id": feedback["feedback_id"]}
+
+
+def _notes_reply(user_id: str, query: str = "") -> str:
+    all_notes = load_json(data_path("feedback"))
+    matched = search_learning_notes(all_notes, user_id, topic=query) if query else [
+        n for n in all_notes if n.get("user_id") == user_id
+    ]
+    if not matched:
+        return "找不到符合條件的筆記；可以傳送「筆記 內容」、PDF、DOCX 或 TXT 新增。"
+    events = {e.get("event_id"): e.get("title", "課堂") for e in load_json(data_path("events"))
+              if e.get("user_id") == user_id}
+    recent = sorted(matched,key=lambda n:n.get("received_at",""),reverse=True)[:5]
+    sections=[]
+    for item in recent:
+        title=events.get(item.get("event_id"), "未分類筆記")
+        excerpt=" ".join(str(item.get("content") or "").split())[:220]
+        date_text=item.get("class_date") or item.get("received_at","")[:10]
+        sections.append(f"{date_text}｜{title}\n{excerpt}")
+    return "最近筆記" + (f"（搜尋：{query}）" if query else "") + "：\n\n" + "\n\n".join(sections)
+
+
+def _handle_file_event(event: dict, user: dict, now: datetime) -> bool:
+    """Only the verified Webhook may download LINE files (never unsigned URLs)."""
+    reply_token=event.get("replyToken","")
+    message=event.get("message") or {}
+    try:
+        name=clean_filename(message.get("fileName",""))
+        raw=download_line_file(message.get("id",""),message.get("fileSize"))
+        text=extract_text(name,raw)
+    except DataError as exc:
+        reply_line_message(reply_token,str(exc))
+        return True
+    except requests.RequestException:
+        reply_line_message(reply_token,"無法從 LINE 下載檔案，請稍後再傳")
+        return True
+    pending=_pending_for(user["user_id"],now)
+    if pending and pending.get("stage")!="note":
+        reply_line_message(reply_token,"目前正在填寫其他資訊，請完成或輸入「取消」再傳筆記")
+        return True
+    synthetic={
+        **event,
+        "message":{**message,"type":"text","text":text if pending else "筆記 "+text},
+        "_attachment_filename":name,
+    }
+    if name.lower().endswith(".pdf"):
+        synthetic["_attachment_content"]=raw
+    return _handle_text_event(synthetic,user,now) is not False
 
 
 def _mark_processed(webhook_event_id: str, received_at: datetime) -> None:
@@ -554,6 +630,27 @@ def _handle_text_event(event: dict, user: dict, now: datetime) -> bool | None:
         return checkin_result
     pending = _pending_for(user_id, now)
 
+    # LINE-first 直接操作：查筆記與臨時筆記可略過逐欄課次引導。
+    # 仍保存來源，不把未確認的文本推定成正式課程。
+    if not pending and text in {"查看筆記", "我的筆記"}:
+        reply_line_message(reply_token, _notes_reply(user_id))
+        return
+    if not pending and text.startswith("搜尋 "):
+        reply_line_message(reply_token, _notes_reply(user_id, text[3:].strip()))
+        return
+    if not pending and text.startswith("筆記 "):
+        try:
+            saved = _save_quick_note(event,user_id,now,text[3:])
+        except DataError as exc:
+            reply_line_message(reply_token, f"筆記尚未保存：{exc}")
+            return False
+        if saved["deduplicated"]:
+            reply_line_message(reply_token,"這則筆記已存在，未重複儲存")
+        else:
+            reply_line_message(reply_token,"已存入 ClassPulse 未分類筆記庫。"
+                "稍後可在網頁歸檔；目前不會自動覆寫日曆或產生讀書任務。")
+        return
+
     if text == "取消":
         if pending:
             _remove_pending(user_id)
@@ -719,6 +816,7 @@ def _handle_text_event(event: dict, user: dict, now: datetime) -> bool | None:
             "topic_tags": [],
             "source": "selected",
             "webhook_event_id": event.get("webhookEventId", ""),
+            "attachment_filename": event.get("_attachment_filename",""),
         }
         result = save_feedback(feedback)
         if result["error"]:
@@ -728,6 +826,13 @@ def _handle_text_event(event: dict, user: dict, now: datetime) -> bool | None:
         if result["deduplicated"]:
             reply_line_message(reply_token, "這則回饋已存在，未重複儲存。")
             return
+        if event.get("_attachment_content") is not None:
+            try:
+                save_pdf_attachment(user_id,feedback["feedback_id"],event["_attachment_content"])
+            except DataError as exc:
+                reply_line_message(reply_token,
+                    f"筆記文字已保存，但 PDF 原檔保存失敗：{exc}")
+                return
         if user.get("ai_after_class_enabled") is not True:
             reply_line_message(reply_token, "筆記與自評進度已儲存。")
             return
@@ -820,9 +925,13 @@ def _process_event(event: dict, now: datetime) -> None:
     users = load_json(data_path("users"))
     user = next((row for row in users if row.get("line_user_id") == line_user_id), None)
     if user:
-        if event.get("type") == "message" and message.get("type") == "text":
-            if _handle_text_event(event, user, now) is False:
-                return
+        if event.get("type") == "message":
+            if message.get("type") == "text":
+                if _handle_text_event(event, user, now) is False:
+                    return
+            elif message.get("type") == "file":
+                if _handle_file_event(event, user, now) is False:
+                    return
     elif event.get("type") == "follow":
         reply_line_message(
             reply_token,
