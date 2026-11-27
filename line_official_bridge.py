@@ -99,6 +99,40 @@ def handle_personal_note(event):
         ai_ready = (os.getenv("CLASSPULSE_FRIEND_AI_SYNC") == "1" and ai_is_configured())
         provider = ai_provider() if ai_ready else ""
         token = event.get("replyToken", "")
+        # An accepted class push opens a course-bound rating flow. Ask for
+        # provider consent after the rating, before the note leaves this device.
+        if pending and pending.get("personal_class_push") is True:
+            if pending.get("stage") in ("progress", "friend_class_ai_choice", "note"):
+                courses = [r for r in storage.load_json(storage.data_path("events"))
+                           if r.get("user_id") == uid and r.get("event_id") == pending.get("event_id")
+                           and r.get("event_type") == "class"]
+                if len(courses) != 1:
+                    line_bot._remove_pending(uid)
+                    line_bot.reply_line_message(token, "原課程已刪除，請重新選擇課程補筆記。")
+                    line_bot._mark_processed(eid, now)
+                    return True
+            if kind == "text" and pending.get("stage") == "progress" and text in line_bot.PROGRESS_CHOICES and ai_ready:
+                pending.update(stage="friend_class_ai_choice", progress=int(text), friend_ai_provider=provider,
+                               expires_at=(now + timedelta(minutes=10)).isoformat(timespec="seconds"))
+                line_bot._set_pending(pending)
+                disclosure = ("Google Gemini API（免費方案資料可能被用於改善產品）" if provider == "gemini" else "OpenAI API")
+                line_bot.reply_line_message(token,
+                    f"已記錄理解程度 {text}。本次若同意 AI 整理，課名、筆記文字及自評將傳送至 {disclosure}，可能產生費用。"
+                    "不傳送 LINE ID 或 PDF 原檔；請使用虛構測試筆記。"
+                    "請選擇「同意AI整理」或「只儲存筆記」。",
+                    ["同意AI整理", "只儲存筆記", "取消"])
+                line_bot._mark_processed(eid, now)
+                return True
+            if pending.get("stage") == "friend_class_ai_choice" and kind == "text" and text not in ("取消", "補筆記", "AI補筆記"):
+                if text == "只儲存筆記" or (text == "同意AI整理" and ai_ready and pending.get("friend_ai_provider") == provider):
+                    pending.update(stage="note", friend_ai_consent=(text == "同意AI整理"),
+                                   expires_at=(now + timedelta(minutes=10)).isoformat(timespec="seconds"))
+                    line_bot._set_pending(pending)
+                    line_bot.reply_line_message(token, "請傳送本堂課的筆記、重點或疑問。")
+                else:
+                    line_bot.reply_line_message(token, "請回覆「同意AI整理」或「只儲存筆記」。若 AI 設定已變更，請選擇只儲存筆記。")
+                line_bot._mark_processed(eid, now)
+                return True
         if kind == "text" and text == "AI補筆記":
             if ai_ready:
                 line_bot._set_pending({
