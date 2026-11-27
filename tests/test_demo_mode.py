@@ -16,6 +16,8 @@ def test_sample_fixture_is_valid_and_editable():
     records = sample_records(NOW)
     assert len(records["events"]) >= 3
     assert len(records["tasks"]) >= 2
+    assert records["plan"] == []  # Demo 首次操作必須顯示可拖排的任務
+    assert len([t for t in records["tasks"] if t["status"] == "pending"]) >= 2
     assert records["users"][0]["line_user_id"] == ""
     assert records["feedback"][0]["source"] == "demo"
     for event in records["events"]:

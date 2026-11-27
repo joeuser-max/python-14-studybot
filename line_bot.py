@@ -284,13 +284,34 @@ def _select_checkin(
     return None, command
 
 
-def _replan_user_tasks(user_id: str, now: datetime) -> list[dict]:
+def _visual_board_enabled(user_id: str, availability: list[dict]) -> bool:
+    return any(row.get("user_id") == user_id and row.get("board_generated")
+               for row in availability)
+
+
+def _replan_user_tasks(user_id: str, now: datetime,
+                       changed_task_id: str = "") -> list[dict]:
     tasks = load_json(data_path("tasks"))
     availability = load_json(data_path("availability"))
     previous_plan = load_json(data_path("plan"))
     own_tasks = [row for row in tasks if row.get("user_id") == user_id]
     own_slots = [row for row in availability if row.get("user_id") == user_id]
     own_plan = [row for row in previous_plan if row.get("user_id") == user_id]
+    if _visual_board_enabled(user_id, availability):
+        # 七日規劃板只在明確按「一鍵填滿」時排程。LINE 進度回報不得重排其他項。
+        if changed_task_id:
+            update_json(data_path("plan"), lambda rows: [
+                row for row in rows
+                if not (row.get("user_id") == user_id
+                        and row.get("task_id") == changed_task_id)
+            ])
+            update_json(data_path("availability"), lambda rows: [
+                row for row in rows
+                if not (row.get("user_id") == user_id
+                        and row.get("availability_id") == "board_" + changed_task_id)
+            ])
+        return [row for row in own_plan if row.get("task_id") != changed_task_id]
+    # 相容原先單純可用時段的 Legacy 排程與其測試。
     plan_result = make_plan(own_tasks, own_slots, own_plan, now)
     new_plan = normalize_plan_result(plan_result, user_id)
     update_json(
@@ -354,7 +375,7 @@ def _handle_study_checkin(event: dict, user: dict) -> bool | None:
                 remaining_minutes=minutes,
                 previous_availability_id=selected.get("availability_id", ""),
             )
-            plan = _replan_user_tasks(user_id, datetime.now(TZ))
+            plan = _replan_user_tasks(user_id, datetime.now(TZ), selected["task_id"])
         except (DataError, ValueError) as exc:
             reply_line_message(reply_token, f"剩餘進度未能重新安排：{exc}")
             return False
@@ -424,7 +445,7 @@ def _handle_study_checkin(event: dict, user: dict) -> bool | None:
                     completed=True,
                     previous_availability_id=selected.get("availability_id", ""),
                 )
-                _replan_user_tasks(user_id, datetime.now(TZ))
+                _replan_user_tasks(user_id, datetime.now(TZ), selected["task_id"])
             except (DataError, ValueError) as exc:
                 reply_line_message(reply_token, f"完成狀態未能更新：{exc}")
                 return False
@@ -491,6 +512,9 @@ def _schedule_confirmed_ai_task(
     own_tasks = [row for row in tasks if row.get("user_id") == user_id]
     own_slots = [row for row in slots if row.get("user_id") == user_id]
     own_plan = [row for row in previous_plan if row.get("user_id") == user_id]
+    if _visual_board_enabled(user_id, slots):
+        # LINE AI 核准只新增待排任務，不在未按自動填滿前變動其他課表。
+        return task, {}
     plan_result = make_plan(own_tasks, own_slots, own_plan, now)
     new_plan = normalize_plan_result(plan_result, user_id)
     update_json(

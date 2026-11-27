@@ -57,14 +57,9 @@ def sample_records(now: datetime | None = None) -> dict[str, list]:
          "estimated_minutes": 30, "status": "completed",
          "preferred_availability_id": ""},
     ]
-    plan = [
-        {"task_id": "demo_task_control", "user_id": DEMO_USER_ID,
-         "availability_id": "demo_slot_1", "status": "scheduled",
-         "source": "auto", "reason": "", "unscheduled_alerted": False},
-        {"task_id": "demo_task_communication", "user_id": DEMO_USER_ID,
-         "availability_id": "demo_slot_2", "status": "scheduled",
-         "source": "auto", "reason": "", "unscheduled_alerted": False},
-    ]
+    # 展示時保持兩個任務待排：先手動拖 A，再按一鍵填滿 B。
+    # 舊版預先排滿兩項，會讓視覺化拖排板沒有卡片可操作。
+    plan = []
     class_date = _recent_completed_class_date(now, 1, 11)
     example_analysis = {
         "summary": "課程練習函式與參數，仍需要釐清預設值的使用方式。",

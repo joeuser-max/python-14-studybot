@@ -1,0 +1,20 @@
+{
+  "format": "classpulse_training_profile",
+  "schema_version": 1,
+  "training": {
+    "name": "示範・晨間短時高頻型",
+    "sessions_per_week": 6,
+    "preferred_periods": [
+      "1",
+      "2",
+      "5"
+    ],
+    "maximum_blocks": 1,
+    "goal": "虛構資料：在白天空檔穿插短任務"
+  },
+  "evidence": {
+    "completion_rate": null,
+    "checkin_rate": null,
+    "verification": "self_reported_unverified"
+  }
+}
