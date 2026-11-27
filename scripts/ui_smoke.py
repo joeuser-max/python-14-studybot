@@ -78,7 +78,10 @@ def main():
                     page.get_by_role("button", name="開始設定綠色偏好（尚不自動排程）").click()
                     page.get_by_role("tab", name="行事曆與拖排").click()
                     expect(page.get_by_role("button", name="確認偏好並一鍵安排")).to_be_visible()
-                    expect(page.locator(".cards .card")).to_have_count(8, timeout=25000)
+                    # Here we are still in normal mode, with an empty local
+                    # fresh dataset. The 8 demo cards appear only AFTER demo
+                    # mode is explicitly switched on later in this test.
+                    expect(page.locator(".cards .card")).to_have_count(0, timeout=25000)
                     page.get_by_role("button", name="保留偏好，暫不排程").click()
                     expect(page.get_by_role("button", name="一鍵安排：標記綠色偏好")).to_be_visible()
 
