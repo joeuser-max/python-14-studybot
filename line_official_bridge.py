@@ -9,10 +9,16 @@ import hmac
 import json
 import os
 import re
+from datetime import datetime
+
+from filelock import FileLock
 
 import requests
 from flask import Flask, abort, request
 
+import storage
+import line_bot
+from line_web_auth import AuthError, _owner
 from line_bot import verify_line_signature
 from line_friend_e2e import create_app as create_demo
 
@@ -36,6 +42,65 @@ def is_demo_event(event):
     return event.get("type") == "follow" or (
         event.get("type") == "message" and message.get("type") == "text"
         and message.get("text") == "開啟網頁")
+
+
+def handle_personal_note(event):
+    """Called only after original OA signature validation and with isolated storage.
+
+    Return True if this event belongs to the new note flow. Do not enable paid
+    AI or worker sends in this phase. Existing non-enrolled users stay legacy.
+    """
+    source = event.get("source", {})
+    subject = source.get("userId")
+    eid = event.get("webhookEventId")
+    if (source.get("type") != "user" or not isinstance(subject, str)
+            or not re.fullmatch(r"U[0-9a-f]{32}", subject)
+            or event.get("mode") == "standby" or event.get("type") != "message"
+            or not isinstance(eid, str) or not eid or len(eid) > 128):
+        return False
+    message = event.get("message", {})
+    kind = message.get("type")
+    if kind not in ("text", "file"):
+        return False
+    text = message.get("text", "")
+    text = text.strip() if isinstance(text, str) else ""
+    now = datetime.now(storage.TZ)
+    storage.DATA_DIR.mkdir(parents=True, exist_ok=True)
+    with FileLock(str(storage.DATA_DIR / ".friend-e2e.lock"), timeout=15):
+        # A previously handled note reply must not fall through after pending
+        # state was cleared; webhook IDs are global to the isolated demo store.
+        if any(r.get("webhook_event_id") == eid
+               for r in storage.load_json(storage.data_path("processed_webhooks"))):
+            return True
+        try:
+            uid = _owner(subject)
+        except AuthError:
+            return False
+        users = storage.load_json(storage.data_path("users"))
+        user = next((u for u in users if u.get("user_id") == uid
+                     and u.get("line_user_id") == subject), None)
+        if user is None:
+            return False
+        pending = line_bot._pending_for(uid, now)
+        command = (text in ("補筆記", "查看筆記", "我的筆記")
+                   or text.startswith(("筆記 ", "搜尋 ")))
+        # Keep legacy binding and explicit progress commands on the existing path.
+        if text.startswith("綁定 ") or text == "完成" or text == "未完成" or text.startswith(("完成 ", "未完成 ")):
+            return False
+        if not (kind == "file" or command or pending):
+            return False
+        # This narrow opt-in enables note intake, not external AI or reminder consent.
+        user = dict(user, ai_after_class_enabled=False)
+        if kind == "file":
+            ok = line_bot._handle_file_event(event, user, now)
+        else:
+            ok = line_bot._handle_text_event(event, user, now)
+        if ok is not False:
+            line_bot._mark_processed(eid, now)
+        else:
+            # Handler reports retryable storage failure; do not silently forward.
+            raise storage.DataError("Personal note event not completed")
+        return True
 
 
 def create_app():
@@ -67,6 +132,28 @@ def create_app():
                                   or not isinstance(e.get("message", {}), dict)
                                   for e in events):
             abort(400)
+        if os.getenv("CLASSPULSE_FRIEND_NOTE_SYNC") == "1" and events:
+            # Preserve event order for stateful conversations, including
+            # multiple messages in one signed webhook. Never send one event
+            # to both the personal and legacy stores.
+            for event in events:
+                if is_demo_event(event):
+                    forwarded, headers = signed_payload(dict(payload, events=[event]), secret)
+                    with demo.test_client() as client:
+                        response = client.post("/webhook", data=forwarded, headers=headers)
+                    if response.status_code != 200:
+                        abort(502)
+                elif not handle_personal_note(event):
+                    forwarded, headers = signed_payload(dict(payload, events=[event]), secret)
+                    try:
+                        response = requests.post(LEGACY_URL, data=forwarded, headers=headers,
+                                                 timeout=(2, 90), allow_redirects=False)
+                    except requests.RequestException:
+                        abort(502)
+                    if response.status_code != 200:
+                        abort(502)
+            return {"ok": True}
+
         legacy_events = [e for e in events if not is_demo_event(e)]
         demo_events = [e for e in events if is_demo_event(e)]
         # Forward all ordinary events without altering their contents; re-sign the
