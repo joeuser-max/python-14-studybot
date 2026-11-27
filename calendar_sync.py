@@ -33,7 +33,16 @@ def preview_ics(contents: bytes, user_id: str, filename: str = "calendar.ics",
         raise DataError("無法解析 ICS，請檢查 iCalendar 檔案格式") from exc
     if len(incoming) > 500:
         raise DataError("這七天的外部事件超過 500 筆，請使用範圍較小的行事曆")
-    uid_counts = Counter(str(item.get('UID') or '').strip() for item in incoming if item.get('UID'))
+    # Expanded VEVENT instances may synthesize RECURRENCE-ID even for a
+    # one-off original. Determine whether it is a real series from the source.
+    originals = source.walk("VEVENT")
+    original_uid_counts = Counter(str(it.get("UID") or "").strip()
+                                  for it in originals if it.get("UID"))
+    recurring_uids = {
+        str(it.get("UID") or "").strip() for it in originals
+        if it.get("UID") and (it.get("RRULE") or it.get("RECURRENCE-ID")
+                             or original_uid_counts[str(it.get("UID"))] > 1)
+    }
     events = []
     for item in incoming:
         if item.get("STATUS") and str(item["STATUS"]).upper() == "CANCELLED":
@@ -55,7 +64,7 @@ def preview_ics(contents: bytes, user_id: str, filename: str = "calendar.ics",
         # A one-off UID should remain stable if the provider moves the event.
         # Recurring instances need their own identity, otherwise weekly events collapse.
         if uid:
-            instance = recurrence_id or (start.isoformat() if uid_counts[uid] > 1 else "")
+            instance = (recurrence_id or start.isoformat()) if uid in recurring_uids else ""
             identity_key = f"{uid}|{instance}"
         else:
             # Without an ICS UID a moved event cannot be reliably matched.
