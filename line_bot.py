@@ -18,6 +18,7 @@ from storage import (
     create_id,
     data_path,
     load_json,
+    record_task_progress,
     save_feedback as storage_save_feedback,
     update_feedback_analysis,
     update_json,
@@ -222,6 +223,233 @@ def _find_class_reminder(user_id: str, event_id: str, class_date: str) -> str:
     return row.get("reminder_id", "") if row else ""
 
 
+def _update_checkin(
+    reminder_id: str,
+    user_id: str,
+    expected_progress_status: str,
+    updates: dict,
+) -> bool:
+    changed = {"value": False}
+
+    def update(rows: list) -> list:
+        updated_rows = []
+        for row in rows:
+            if (
+                row.get("reminder_id") == reminder_id
+                and row.get("user_id") == user_id
+                and row.get("kind") == "study_session_checkin"
+                and row.get("status") == "sent"
+                and row.get("progress_status") == expected_progress_status
+            ):
+                updated_rows.append({**row, **updates})
+                changed["value"] = True
+            else:
+                updated_rows.append(row)
+        return updated_rows
+
+    update_json(data_path("reminders"), update)
+    return changed["value"]
+
+
+def _open_checkins(user_id: str, progress_status: str) -> list[dict]:
+    return sorted(
+        [
+            row for row in load_json(data_path("reminders"))
+            if row.get("kind") == "study_session_checkin"
+            and row.get("user_id") == user_id
+            and row.get("status") == "sent"
+            and row.get("progress_status") == progress_status
+        ],
+        key=lambda row: row.get("scheduled_at", ""),
+        reverse=True,
+    )
+
+
+def _select_checkin(
+    text: str,
+    user_id: str,
+    progress_status: str,
+) -> tuple[dict | None, str]:
+    command, separator, task_id = text.partition(" ")
+    if command not in {"完成", "未完成"}:
+        return None, ""
+    checkins = _open_checkins(user_id, progress_status)
+    if not checkins:
+        return None, ""
+    if separator:
+        selected = next((row for row in checkins if row.get("task_id") == task_id.strip()), None)
+        return selected, command
+    if len(checkins) == 1:
+        return checkins[0], command
+    return None, command
+
+
+def _replan_user_tasks(user_id: str, now: datetime) -> list[dict]:
+    tasks = load_json(data_path("tasks"))
+    availability = load_json(data_path("availability"))
+    previous_plan = load_json(data_path("plan"))
+    own_tasks = [row for row in tasks if row.get("user_id") == user_id]
+    own_slots = [row for row in availability if row.get("user_id") == user_id]
+    own_plan = [row for row in previous_plan if row.get("user_id") == user_id]
+    plan_result = make_plan(own_tasks, own_slots, own_plan, now)
+    new_plan = normalize_plan_result(plan_result, user_id)
+    update_json(
+        data_path("plan"),
+        lambda rows: merge_user_plan(rows, user_id, new_plan),
+    )
+    return new_plan
+
+
+def _handle_study_checkin(event: dict, user: dict) -> bool | None:
+    text = event.get("message", {}).get("text", "")
+    text = text.strip() if isinstance(text, str) else ""
+    user_id = user["user_id"]
+    reply_token = event.get("replyToken", "")
+    webhook_event_id = event.get("webhookEventId", "")
+
+    remaining = _open_checkins(user_id, "awaiting_remaining_minutes")
+    if remaining:
+        if text == "取消":
+            selected = remaining[0]
+            updated = _update_checkin(
+                selected["reminder_id"],
+                user_id,
+                "awaiting_remaining_minutes",
+                {"progress_status": "no_response"},
+            )
+            reply_line_message(
+                reply_token,
+                (
+                    "已取消剩餘分鐘回報；任務仍保持待完成，之後可在 ClassPulse 重新排程。"
+                    if updated else "這筆讀書進度已處理。"
+                ),
+            )
+            return True
+        parts = text.split()
+        if len(remaining) == 1 and len(parts) == 1:
+            selected = remaining[0]
+            minutes_text = parts[0]
+        elif len(parts) == 2:
+            selected = next(
+                (row for row in remaining if row.get("task_id") == parts[0]),
+                None,
+            )
+            minutes_text = parts[1]
+        else:
+            reply_line_message(
+                reply_token,
+                "請輸入剩餘分鐘數；若有多個待回報任務，請輸入「任務代碼 分鐘數」。",
+            )
+            return True
+        try:
+            if not minutes_text.isdecimal() or int(minutes_text) <= 0:
+                raise ValueError
+            if selected is None:
+                raise DataError("找不到這筆待回報任務，請確認任務代碼")
+            minutes = int(minutes_text)
+            record_task_progress(
+                selected["task_id"],
+                user_id,
+                completed=False,
+                remaining_minutes=minutes,
+                previous_availability_id=selected.get("availability_id", ""),
+            )
+            plan = _replan_user_tasks(user_id, datetime.now(TZ))
+        except (DataError, ValueError) as exc:
+            reply_line_message(reply_token, f"剩餘進度未能重新安排：{exc}")
+            return False
+
+        updated = _update_checkin(
+            selected["reminder_id"],
+            user_id,
+            "awaiting_remaining_minutes",
+            {
+                "progress_status": "replanned",
+                "remaining_minutes": minutes,
+                "progress_reply_webhook_event_id": webhook_event_id,
+            },
+        )
+        if not updated:
+            reply_line_message(reply_token, "這筆讀書進度已處理，沒有重複更新。")
+            return True
+        task_plan = next(
+            (row for row in plan if row.get("task_id") == selected["task_id"]),
+            {},
+        )
+        if task_plan.get("status") == "scheduled":
+            slot = next(
+                (
+                    row for row in load_json(data_path("availability"))
+                    if row.get("availability_id") == task_plan.get("availability_id")
+                    and row.get("user_id") == user_id
+                ),
+                {},
+            )
+            reply_line_message(
+                reply_token,
+                f"已保留原始預估時間，剩餘 {minutes} 分鐘已重新安排至 "
+                f"{slot.get('date')} {slot.get('start_time')}。",
+            )
+        else:
+            reply_line_message(
+                reply_token,
+                f"已記錄剩餘 {minutes} 分鐘，但目前無法排入："
+                f"{task_plan.get('reason') or '請到 ClassPulse 檢查可用時段與期限。'}",
+            )
+        return True
+
+    if text == "取消" and _open_checkins(user_id, "awaiting_response"):
+        reply_line_message(reply_token, "未收到完成狀態回報，任務仍保持待完成。")
+        return True
+
+    selected, command = _select_checkin(text, user_id, "awaiting_response")
+    if command:
+        if selected is None:
+            checkins = _open_checkins(user_id, "awaiting_response")
+            if len(checkins) > 1 and " " not in text:
+                ids = "、".join(row.get("task_id", "") for row in checkins)
+                reply_line_message(
+                    reply_token,
+                    f"有多筆待確認任務，請使用「{command} 任務代碼」。可選代碼：{ids}",
+                )
+            else:
+                reply_line_message(reply_token, "找不到這筆待確認任務，請確認任務代碼。")
+            return True
+
+        if command == "完成":
+            try:
+                record_task_progress(
+                    selected["task_id"],
+                    user_id,
+                    completed=True,
+                    previous_availability_id=selected.get("availability_id", ""),
+                )
+                _replan_user_tasks(user_id, datetime.now(TZ))
+            except (DataError, ValueError) as exc:
+                reply_line_message(reply_token, f"完成狀態未能更新：{exc}")
+                return False
+            progress_status = "completed"
+            message = "已記錄任務完成。"
+        else:
+            progress_status = "awaiting_remaining_minutes"
+            message = "已記錄尚未完成；請輸入剩餘所需分鐘數。"
+        updated = _update_checkin(
+            selected["reminder_id"],
+            user_id,
+            "awaiting_response",
+            {
+                "progress_status": progress_status,
+                "progress_reply_webhook_event_id": webhook_event_id,
+            },
+        )
+        if not updated:
+            reply_line_message(reply_token, "這筆讀書進度已處理，沒有重複更新。")
+            return True
+        reply_line_message(reply_token, message)
+        return True
+    return None
+
+
 def _schedule_confirmed_ai_task(
     user_id: str,
     pending: dict,
@@ -251,6 +479,8 @@ def _schedule_confirmed_ai_task(
             "status": "pending",
             "preferred_availability_id": "",
             "source_feedback_id": pending["feedback_id"],
+            "source_event_id": pending["event_id"],
+            "source_class_date": pending["class_date"],
             "source": "ai_confirmed",
         }
         add_task_to_storage(task)
@@ -285,6 +515,8 @@ def _format_class_feedback_analysis(analysis: dict, progress: int) -> str:
     if analysis["unresolved_questions"]:
         lines.append("待釐清：")
         lines.extend(f"・{question}" for question in analysis["unresolved_questions"])
+    if analysis.get("topic_tags"):
+        lines.append("主題標籤：" + "、".join(analysis["topic_tags"]))
     return "\n".join(lines)
 
 
@@ -293,6 +525,9 @@ def _handle_text_event(event: dict, user: dict, now: datetime) -> bool | None:
     text = text.strip() if isinstance(text, str) else ""
     reply_token = event.get("replyToken", "")
     user_id = user["user_id"]
+    checkin_result = _handle_study_checkin(event, user)
+    if checkin_result is not None:
+        return checkin_result
     pending = _pending_for(user_id, now)
 
     if text == "取消":
@@ -457,6 +692,7 @@ def _handle_text_event(event: dict, user: dict, now: datetime) -> bool | None:
             "received_at": now.isoformat(timespec="seconds"),
             "content": text,
             "progress": pending["progress"],
+            "topic_tags": [],
             "source": "selected",
             "webhook_event_id": event.get("webhookEventId", ""),
         }

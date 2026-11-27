@@ -6,7 +6,7 @@ from zoneinfo import ZoneInfo
 
 import requests
 
-from scheduler import get_due_events, get_due_study_reminders
+from scheduler import get_due_events, get_due_study_checkins, get_due_study_reminders
 from storage import data_path, load_json, update_json
 
 
@@ -86,6 +86,7 @@ def run_reminder_worker_once(now: datetime | None = None) -> list[dict]:
 
     due = get_due_events(events, now, reminders)
     due.extend(get_due_study_reminders(tasks, plan, availability, users, now, reminders))
+    due.extend(get_due_study_checkins(tasks, plan, availability, users, now, reminders))
     task_map = {task["task_id"]: task for task in tasks}
     user_map = {user["user_id"]: user for user in users}
     existing_ids = {row.get("reminder_id") for row in reminders}
@@ -148,10 +149,24 @@ def run_reminder_worker_once(now: datetime | None = None) -> list[dict]:
             )
         elif reminder["kind"] == "study_session":
             task = task_map.get(reminder["task_id"], {})
-            text = f"讀書時段開始囉！任務：{task.get('title', reminder['task_id'])}，請開始完成。"
+            subject = task.get("subject") or "未指定科目"
+            title = task.get("title") or reminder["task_id"]
+            text = f"讀書時段開始囉！任務：科目「{subject}」，{title}，請開始完成。"
+        elif reminder["kind"] == "study_session_checkin":
+            task = task_map.get(reminder["task_id"], {})
+            task_id = reminder["task_id"]
+            text = (
+                f"讀書時段結束囉！任務：{task.get('title', task_id)}。"
+                f"請回覆「完成 {task_id}」或「未完成 {task_id}」；"
+                "若未完成，接著輸入剩餘所需分鐘數。"
+            )
         else:
             task = task_map.get(reminder["task_id"], {})
-            text = f"提醒：任務「{task.get('title', reminder['task_id'])}」尚未排入。原因："
+            subject = task.get("subject") or "未指定科目"
+            title = task.get("title") or reminder["task_id"]
+            text = (
+                f"提醒：科目「{subject}」，任務「{title}」尚未排入。原因："
+            )
             plan_row = next((p for p in plan if p.get("task_id") == reminder["task_id"]), {})
             text += plan_row.get("reason", "請在 ClassPulse 調整時段或期限。")
 

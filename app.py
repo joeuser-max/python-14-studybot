@@ -15,7 +15,8 @@ from storage import (
     DataError, TZ, add_availabilities, add_event, add_task_to_storage,
     clear_task_availability_preference, create_id, data_path,
     delete_availability, load_json, update_availability, update_event,
-    update_json, update_task, save_feedback, select_demo_storage,
+    search_learning_notes, update_feedback_topic_tags, update_json, update_task,
+    save_feedback, select_demo_storage,
 )
 from tracker import calculate_response_rate, calculate_task_progress
 from plan_bridge import merge_user_plan, normalize_plan_result
@@ -101,10 +102,10 @@ with pages[0]:
             "locale": "zh-tw",
             "timeZone": "Asia/Taipei",
             "allDaySlot": False,
-            "slotMinTime": "06:00:00",
+            "slotMinTime": "00:00:00",
             "slotMaxTime": "24:00:00",
             "nowIndicator": True,
-            "height": 650,
+            "height": "auto",
             "eventTimeFormat": {
                 "hour": "2-digit",
                 "minute": "2-digit",
@@ -245,7 +246,7 @@ with pages[0]:
             value=current_user.get("reminders_enabled", True),
         )
         study_reminders = st.checkbox(
-            "接收讀書時段開始提醒",
+            "接收讀書開始提醒與結束進度確認",
             value=current_user.get("study_reminders_enabled", False),
         )
         ai_configured = ai_is_configured()
@@ -357,7 +358,7 @@ with pages[0]:
     selected_blocks = []
     with st.form("add_slot", clear_on_submit=True):
         st.caption("勾選有空的半小時區塊；連續區塊會自動合併成一個讀書時段。")
-        st.caption("灰色區塊代表已過去、與課程衝突或已設定為可用的時間。")
+        st.caption("灰色區塊代表已結束、與課程衝突或已設定為可用的時間。")
         time_columns = st.columns(len(day_parts))
         for column, (part_name, part_start, part_end) in zip(time_columns, day_parts):
             with column:
@@ -370,7 +371,7 @@ with pages[0]:
                     )
                     past = (
                         slot_date == now.date()
-                        and start_minute < current_minute
+                        and end_minute <= current_minute
                     )
                     start_label = f"{start_minute // 60:02d}:{start_minute % 60:02d}"
                     end_label = f"{end_minute // 60:02d}:{end_minute % 60:02d}"
@@ -524,6 +525,22 @@ with pages[0]:
 with pages[1]:
     st.subheader("新增讀書任務")
     slot_map = {s["availability_id"]: s for s in own(records["availability"])}
+    task_notes = sorted(
+        own(records["feedback"]),
+        key=lambda row: row.get("received_at", ""),
+        reverse=True,
+    )
+    task_note_map = {row["feedback_id"]: row for row in task_notes}
+    course_map = {row["event_id"]: row for row in own(records["events"])}
+
+    def task_note_label(feedback_id: str) -> str:
+        note = task_note_map[feedback_id]
+        course = course_map.get(note.get("event_id"), {})
+        return (
+            f"{course.get('title', '未知課程')}｜{note.get('class_date', '')}｜"
+            f"{note.get('content', '')[:40]}"
+        )
+
     def slot_label(sid: str) -> str:
         if not sid:
             return "自動安排（不固定）"
@@ -538,18 +555,38 @@ with pages[1]:
         with b:
             estimate = st.number_input("預估分鐘", min_value=1, value=60, step=15)
         chosen_slot = st.selectbox("指定固定時段（選填）", [""] + list(slot_map), format_func=slot_label)
+        source_feedback_id = st.selectbox(
+            "關聯課程進度／筆記（選填）",
+            [""] + list(task_note_map),
+            format_func=lambda feedback_id: (
+                "不關聯筆記" if not feedback_id else task_note_label(feedback_id)
+            ),
+        )
         if st.form_submit_button("新增任務"):
             task = {"task_id": create_id("task"), "user_id": USER_ID,
                     "subject": subject.strip(), "title": task_name.strip(),
                     "deadline": deadline.isoformat(), "estimated_minutes": int(estimate),
                     "status": "pending", "preferred_availability_id": chosen_slot}
+            if source_feedback_id:
+                source_note = task_note_map[source_feedback_id]
+                task.update({
+                    "source_feedback_id": source_feedback_id,
+                    "source_event_id": source_note["event_id"],
+                    "source_class_date": source_note["class_date"],
+                })
             safely(lambda: add_task_to_storage(task), "任務已新增")
 
     tasks = own(records["tasks"])
     if tasks:
-        st.dataframe([{"任務": x["title"], "科目": x["subject"], "期限": x["deadline"],
-                       "所需分鐘": x["estimated_minutes"], "狀態": x["status"]} for x in tasks], hide_index=True)
-        st.subheader("修改任務名稱、狀態與期限")
+        st.dataframe([{
+            "任務": x["title"],
+            "科目": x["subject"],
+            "期限": x["deadline"],
+            "原始預估分鐘": x["estimated_minutes"],
+            "剩餘分鐘": x.get("remaining_minutes", x["estimated_minutes"]),
+            "狀態": x["status"],
+        } for x in tasks], hide_index=True)
+        st.subheader("修改科目、任務名稱、狀態與期限")
         task_by_id = {task["task_id"]: task for task in tasks}
 
         def task_label(task_id: str) -> str:
@@ -569,6 +606,11 @@ with pages[1]:
                 value=selected_task["title"],
                 key=f"edit_task_title_{selected_task_id}",
             )
+            updated_subject = st.text_input(
+                "科目名稱",
+                value=selected_task["subject"],
+                key=f"edit_task_subject_{selected_task_id}",
+            )
             updated_deadline = st.date_input(
                 "Deadline",
                 value=date.fromisoformat(selected_task["deadline"]),
@@ -581,13 +623,50 @@ with pages[1]:
                 horizontal=True,
                 key=f"edit_task_status_{selected_task_id}",
             )
+            updated_remaining_minutes = st.number_input(
+                "剩餘所需分鐘",
+                min_value=1,
+                value=selected_task.get(
+                    "remaining_minutes", selected_task["estimated_minutes"]
+                ),
+                disabled=updated_status == "completed",
+                help="讀書時段未完成時，可在此手動回報剩餘時間；儲存後請重新安排計畫。",
+                key=f"edit_task_remaining_{selected_task_id}",
+            )
             if st.form_submit_button("儲存任務修改"):
                 updated_task = {
                     **selected_task,
                     "title": updated_title.strip(),
+                    "subject": updated_subject.strip(),
                     "deadline": updated_deadline.isoformat(),
                     "status": updated_status,
                 }
+                current_remaining = selected_task.get(
+                    "remaining_minutes", selected_task["estimated_minutes"]
+                )
+                if updated_status == "completed":
+                    updated_task.pop("remaining_minutes", None)
+                elif (
+                    "remaining_minutes" in selected_task
+                    or int(updated_remaining_minutes) != selected_task["estimated_minutes"]
+                ):
+                    updated_task["remaining_minutes"] = int(updated_remaining_minutes)
+                else:
+                    updated_task.pop("remaining_minutes", None)
+                if int(updated_remaining_minutes) != current_remaining:
+                    current_plan_row = next(
+                        (
+                            row for row in own(records["plan"])
+                            if row.get("task_id") == selected_task_id
+                            and row.get("status") == "scheduled"
+                        ),
+                        {},
+                    )
+                    if (
+                        updated_task.get("preferred_availability_id")
+                        == current_plan_row.get("availability_id")
+                    ):
+                        updated_task["preferred_availability_id"] = ""
 
                 def save_task_changes():
                     update_task(updated_task)
@@ -601,13 +680,13 @@ with pages[1]:
 
                 safely(
                     save_task_changes,
-                    "任務名稱、期限與狀態已更新；請重新產生讀書計畫",
+                    "科目、任務名稱、期限與狀態已更新；請重新產生讀書計畫",
                 )
     else:
         st.info("新增第一項任務後，即可在此修改期限與狀態。")
 
     st.subheader("讀書排程")
-    st.caption("此頁已預留 B 的 scheduler.make_plan(tasks, availability, previous_plan, now) 串接介面。")
+    st.caption("依 Deadline、任務剩餘分鐘與可用時段重新安排；手動指定時段優先保留。")
     if st.button("產生／重新安排計畫"):
         try:
             from scheduler import make_plan  # 莊育哲的模組；不以假資料冒充完成排程
@@ -628,12 +707,51 @@ with pages[1]:
     if own(records["plan"]):
         st.dataframe(own(records["plan"]), hide_index=True)
         task_titles = {task["task_id"]: task["title"] for task in tasks}
+        notes_by_id = {note["feedback_id"]: note for note in own(records["feedback"])}
         for row in own(records["plan"]):
             if row.get("status") == "unscheduled":
                 st.warning(
                     f"任務「{task_titles.get(row.get('task_id'), row.get('task_id'))}」尚未排入："
                     f"{row.get('reason') or '請檢查任務與可用時段。'}"
                 )
+            elif row.get("status") == "scheduled":
+                task = next(
+                    (item for item in tasks if item.get("task_id") == row.get("task_id")),
+                    {},
+                )
+                source_note = notes_by_id.get(task.get("source_feedback_id"))
+                related_notes = (
+                    [source_note]
+                    if source_note
+                    else [
+                        note for note in own(records["feedback"])
+                        if task.get("source_event_id")
+                        and note.get("event_id") == task.get("source_event_id")
+                    ]
+                )
+                with st.expander(
+                    f"讀書時段回想筆記｜{task_titles.get(row.get('task_id'), row.get('task_id'))}"
+                ):
+                    if related_notes:
+                        for note in related_notes:
+                            course = course_map.get(note.get("event_id"), {})
+                            st.caption(
+                                f"{course.get('title', '未知課程')}｜{note.get('class_date', '')}"
+                            )
+                            st.write(note.get("content", ""))
+                            tags = note.get("topic_tags")
+                            if tags is None and isinstance(note.get("ai_analysis"), dict):
+                                tags = note["ai_analysis"].get("topic_tags", [])
+                            if not isinstance(tags, list):
+                                tags = []
+                            if tags:
+                                st.caption("主題：" + "、".join(tags))
+                            analysis = note.get("ai_analysis", {})
+                            if isinstance(analysis, dict) and analysis.get("summary"):
+                                st.markdown("**整理摘要**")
+                                st.write(analysis["summary"])
+                    else:
+                        st.caption("此任務尚未關聯課後筆記；可在新增任務時選擇來源筆記。")
     else:
         st.info("尚無已儲存的讀書計畫。")
 
@@ -646,14 +764,76 @@ with pages[2]:
     b.metric("有回覆課次", reminder_stats["answered"])
     c.metric("提醒回覆率", f"{reminder_stats['rate']}%" if reminder_stats["rate"] is not None else "尚無資料")
     st.caption(f"明確完成讀書任務：{task_stats['completed']} / {task_stats['total']}；回覆率不等於學習完成率。")
-    notes = sorted(own(records["feedback"]), key=lambda f: f.get("received_at", ""), reverse=True)
+    st.subheader("可搜尋筆記庫")
+    library_courses = own(records["events"])
+    library_notes = own(records["feedback"])
+    course_titles = {event["event_id"]: event["title"] for event in library_courses}
+    course_options = [""] + list(course_titles)
+    note_dates = [""] + sorted(
+        {note.get("class_date", "") for note in library_notes if note.get("class_date")},
+        reverse=True,
+    )
+    filter_columns = st.columns(3)
+    with filter_columns[0]:
+        selected_note_course = st.selectbox(
+            "依課程篩選",
+            course_options,
+            format_func=lambda event_id: (
+                "所有課程" if not event_id else course_titles[event_id]
+            ),
+            key="note_library_course",
+        )
+    with filter_columns[1]:
+        selected_note_date = st.selectbox(
+            "依課次日期篩選",
+            note_dates,
+            format_func=lambda value: value or "所有日期",
+            key="note_library_date",
+        )
+    with filter_columns[2]:
+        selected_note_topic = st.text_input(
+            "依主題標籤搜尋",
+            placeholder="例如：函式",
+            key="note_library_topic",
+        )
+    notes = search_learning_notes(
+        records["feedback"],
+        USER_ID,
+        event_id=selected_note_course,
+        class_date=selected_note_date,
+        topic=selected_note_topic,
+    )
     if notes:
-        courses = {e["event_id"]: e["title"] for e in own(records["events"])}
         for row in notes:
-            with st.expander(f"{row.get('class_date')}｜{courses.get(row.get('event_id'), '未知課程')}"):
+            with st.expander(
+                f"{row.get('class_date')}｜{course_titles.get(row.get('event_id'), '未知課程')}"
+            ):
                 st.write(row.get("content", ""))
                 if row.get("progress") is not None:
                     st.caption(f"自評理解進度：{row['progress']}/5")
+                with st.form(f"note_tags_form_{row.get('feedback_id')}"):
+                    current_tags = row.get("topic_tags")
+                    if current_tags is None and isinstance(row.get("ai_analysis"), dict):
+                        current_tags = row["ai_analysis"].get("topic_tags", [])
+                    if not isinstance(current_tags, list):
+                        current_tags = []
+                    updated_tags = st.text_input(
+                        "主題標籤（以逗號分隔，可新增、修改或移除）",
+                        value=", ".join(current_tags),
+                        key=f"note_tags_{row.get('feedback_id')}",
+                    )
+                    if st.form_submit_button("儲存主題標籤"):
+                        tags = [
+                            tag.strip()
+                            for tag in updated_tags.replace("，", ",").replace("、", ",").split(",")
+                            if tag.strip()
+                        ]
+                        safely(
+                            lambda: update_feedback_topic_tags(
+                                row["feedback_id"], USER_ID, tags
+                            ),
+                            "筆記主題標籤已更新",
+                        )
                 analysis = row.get("ai_analysis", {})
                 if analysis:
                     st.markdown("**AI 整理摘要**")
@@ -684,7 +864,7 @@ with pages[2]:
                         st.caption(task_status)
                 st.caption(f"回覆時間：{row.get('received_at')}｜來源：{row.get('source')}")
     else:
-        st.info("尚無真實 LINE 回饋。須待 B 的 LINE Webhook 串接後才會顯示資料。")
+        st.info("目前沒有符合篩選條件的筆記；可清除篩選或先記錄一筆課後回饋。")
 
 with pages[3]:
     st.subheader("AI-ready Markdown 匯出")
@@ -728,11 +908,21 @@ with pages[3]:
                 deadline = st.date_input("目標期限", value=datetime.now(TZ).date() + timedelta(days=7), key=f"ai_due_{idx}")
                 subject = st.text_input("科目", value=suggestion["topic"][:80], key=f"ai_subject_{idx}")
                 if st.form_submit_button("確認並新增至讀書任務"):
+                    source_note = next(
+                        (
+                            note for note in own(records["feedback"])
+                            if note.get("feedback_id") == suggestion["source_feedback_id"]
+                        ),
+                        {},
+                    )
                     task = {"task_id": create_id("task"), "user_id": USER_ID,
                             "subject": subject.strip(), "title": suggestion["suggested_task"][:300],
                             "deadline": deadline.isoformat(), "estimated_minutes": int(estimate),
                             "status": "pending", "preferred_availability_id": "",
-                            "source_feedback_id": suggestion["source_feedback_id"], "source": "ai_confirmed"}
+                            "source_feedback_id": suggestion["source_feedback_id"],
+                            "source_event_id": source_note.get("event_id", ""),
+                            "source_class_date": source_note.get("class_date", ""),
+                            "source": "ai_confirmed"}
                     safely(lambda: add_task_to_storage(task), "已依你確認的內容新增任務")
     elif not own(records["feedback"]):
         st.info("目前沒有可分析的筆記。完成 LINE Webhook 整合後即可使用此功能。")

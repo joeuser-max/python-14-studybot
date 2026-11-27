@@ -1,0 +1,74 @@
+[
+  {
+    "event_id": "event_4e3288adbf9a",
+    "user_id": "demo_user_001",
+    "event_type": "class",
+    "title": "電子學lll",
+    "weekday": 1,
+    "start_time": "09:00",
+    "end_time": "11:50",
+    "offset_minutes": 0,
+    "prompt_template": "class_feedback",
+    "enabled": true
+  },
+  {
+    "event_id": "event_439f9d9cb3be",
+    "user_id": "demo_user_001",
+    "event_type": "class",
+    "title": "程式設計-python",
+    "weekday": 1,
+    "start_time": "18:00",
+    "end_time": "20:50",
+    "offset_minutes": 0,
+    "prompt_template": "class_feedback",
+    "enabled": true
+  },
+  {
+    "event_id": "event_b4c1bcfe3d14",
+    "user_id": "demo_user_001",
+    "event_type": "class",
+    "title": "深度學習系統設計與實作",
+    "weekday": 2,
+    "start_time": "09:00",
+    "end_time": "11:50",
+    "offset_minutes": 0,
+    "prompt_template": "class_feedback",
+    "enabled": true
+  },
+  {
+    "event_id": "event_8f2ad951ce7c",
+    "user_id": "demo_user_001",
+    "event_type": "class",
+    "title": "控制系統",
+    "weekday": 2,
+    "start_time": "13:00",
+    "end_time": "14:50",
+    "offset_minutes": 0,
+    "prompt_template": "class_feedback",
+    "enabled": true
+  },
+  {
+    "event_id": "event_370f9f3b7840",
+    "user_id": "demo_user_001",
+    "event_type": "class",
+    "title": "控制系統",
+    "weekday": 3,
+    "start_time": "13:00",
+    "end_time": "13:50",
+    "offset_minutes": 0,
+    "prompt_template": "class_feedback",
+    "enabled": true
+  },
+  {
+    "event_id": "event_ad2be144253b",
+    "user_id": "demo_user_001",
+    "event_type": "class",
+    "title": "電子電路實驗lll",
+    "weekday": 3,
+    "start_time": "15:00",
+    "end_time": "17:50",
+    "offset_minutes": 0,
+    "prompt_template": "class_feedback",
+    "enabled": true
+  }
+]

@@ -9,10 +9,13 @@ from storage import (
     data_path,
     delete_availability,
     load_json,
+    record_task_progress,
     save_json,
+    search_learning_notes,
     update_feedback_analysis,
     update_availability,
     update_event,
+    update_feedback_topic_tags,
     update_task,
     validate_feedback,
 )
@@ -306,6 +309,7 @@ def test_update_task_changes_name_deadline_and_status_without_losing_other_data(
 
     updated = {
         **original,
+        "subject": "微積分",
         "title": "完成 c14",
         "deadline": "2026-12-05",
         "status": "completed",
@@ -331,3 +335,70 @@ def test_update_task_rejects_missing_task(monkeypatch, tmp_path):
 
     with pytest.raises(DataError, match="找不到要修改的任務"):
         update_task(missing)
+
+
+def test_record_task_progress_preserves_estimate_and_releases_old_slot(
+    monkeypatch, tmp_path
+):
+    use_test_data(monkeypatch, tmp_path)
+    task = {
+        "task_id": "task-1", "user_id": "user-1", "subject": "Python",
+        "title": "複習函式", "deadline": "2026-11-30",
+        "estimated_minutes": 90, "status": "pending",
+        "preferred_availability_id": "old-slot",
+    }
+    save_json(data_path("tasks"), [task])
+
+    record_task_progress(
+        "task-1", "user-1", completed=False, remaining_minutes=35,
+        previous_availability_id="old-slot",
+    )
+    saved = load_json(data_path("tasks"))[0]
+    assert saved["estimated_minutes"] == 90
+    assert saved["remaining_minutes"] == 35
+    assert saved["preferred_availability_id"] == ""
+
+    record_task_progress(
+        "task-1", "user-1", completed=True, previous_availability_id="old-slot"
+    )
+    saved = load_json(data_path("tasks"))[0]
+    assert saved["status"] == "completed"
+    assert "remaining_minutes" not in saved
+    assert saved["estimated_minutes"] == 90
+
+
+def test_note_search_and_tag_edits_are_user_scoped(monkeypatch, tmp_path):
+    use_test_data(monkeypatch, tmp_path)
+    feedback = [
+        {
+            "feedback_id": "note-1", "user_id": "user-1", "event_id": "event-1",
+            "class_date": "2026-11-24", "received_at": "2026-11-24T20:00:00+08:00",
+            "topic_tags": ["函式", "參數"],
+        },
+        {
+            "feedback_id": "note-2", "user_id": "user-2", "event_id": "event-1",
+            "class_date": "2026-11-24", "received_at": "2026-11-24T21:00:00+08:00",
+            "topic_tags": ["函式"],
+        },
+        {
+            "feedback_id": "note-3", "user_id": "user-1", "event_id": "event-2",
+            "class_date": "2026-11-25", "received_at": "2026-11-25T20:00:00+08:00",
+            "topic_tags": ["清單"],
+        },
+    ]
+    save_json(data_path("feedback"), feedback)
+
+    assert [
+        row["feedback_id"]
+        for row in search_learning_notes(
+            load_json(data_path("feedback")), "user-1", event_id="event-1",
+            class_date="2026-11-24", topic="函",
+        )
+    ] == ["note-1"]
+    update_feedback_topic_tags("note-1", "user-1", ["演算法", "演算法"])
+    updated = load_json(data_path("feedback"))
+    assert updated[0]["topic_tags"] == ["演算法"]
+    assert updated[1] == feedback[1]
+    assert search_learning_notes(updated, "user-1", topic="函") == []
+    with pytest.raises(DataError, match="找不到要更新的筆記"):
+        update_feedback_topic_tags("note-2", "user-1", ["隱私"])

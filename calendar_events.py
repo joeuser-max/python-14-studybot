@@ -63,12 +63,20 @@ def build_calendar_events(
         if task is None or slot is None or task.get("status") != "pending":
             continue
 
-        start = datetime.combine(
-            date.fromisoformat(slot["date"]),
-            time.fromisoformat(slot["start_time"]),
-            tzinfo=TZ,
+        scheduled_start = row.get("scheduled_start")
+        if scheduled_start:
+            start = datetime.fromisoformat(scheduled_start)
+            if start.tzinfo is None:
+                start = start.replace(tzinfo=TZ)
+        else:
+            start = datetime.combine(
+                date.fromisoformat(slot["date"]),
+                time.fromisoformat(slot["start_time"]),
+                tzinfo=TZ,
+            )
+        end = start + timedelta(
+            minutes=int(task.get("remaining_minutes", task["estimated_minutes"]))
         )
-        end = start + timedelta(minutes=int(task["estimated_minutes"]))
         events.append({
             "id": f"study-{task['task_id']}",
             "title": f"讀書｜{task['subject']}｜{task['title']}",

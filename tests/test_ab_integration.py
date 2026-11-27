@@ -88,6 +88,9 @@ def test_streamlit_plan_bridge_and_worker_share_data(monkeypatch, tmp_path):
     assert first[0]["status"] == "sent"
     assert second == []
     assert len(calls) == 1
+    assert calls[0][2] == (
+        "讀書時段開始囉！任務：科目「Python」，完成期末作業，請開始完成。"
+    )
     assert load_json(data_path("reminders"))[0]["status"] == "sent"
 
 
@@ -98,7 +101,7 @@ def test_failed_study_push_reuses_retry_key(monkeypatch, tmp_path):
         "study_reminders_enabled": True,
     }
     task = {"task_id": "task-1", "user_id": user["user_id"], "title": "讀書",
-            "status": "pending"}
+            "estimated_minutes": 30, "status": "pending"}
     slot = {"availability_id": "slot-1", "user_id": user["user_id"],
             "date": "2026-11-24", "start_time": "19:00", "available_minutes": 30}
     plan = [{"user_id": user["user_id"], "task_id": task["task_id"],
@@ -155,7 +158,9 @@ def test_unscheduled_alert_state_is_saved_and_not_resent(monkeypatch, tmp_path):
     monkeypatch.setattr(
         reminder_worker,
         "push_line_message",
-        lambda target_user, reminder, text: calls.append(reminder["reminder_id"]) or True,
+        lambda target_user, reminder, text: calls.append(
+            (reminder["reminder_id"], text)
+        ) or True,
     )
 
     delivered = reminder_worker.run_reminder_worker_once(
@@ -163,6 +168,10 @@ def test_unscheduled_alert_state_is_saved_and_not_resent(monkeypatch, tmp_path):
     )
     saved_plan = load_json(data_path("plan"))
     assert delivered[0]["kind"] == "unscheduled_alert"
+    assert calls[0][1] == (
+        "提醒：科目「Python」，任務「沒有可用時段的任務」尚未排入。"
+        "原因：找不到足夠且不衝突的可用時段"
+    )
     assert saved_plan[0]["unscheduled_alerted"] is True
     next_result = make_plan(
         [task], [], saved_plan, datetime(2026, 11, 23, 16, 1, tzinfo=TZ)
@@ -315,6 +324,7 @@ def test_ai_feedback_is_saved_and_only_scheduled_after_user_confirmation(
         "summary": "本堂介紹函式與清單。",
         "key_points": ["函式可重複使用", "清單可存放多筆資料"],
         "unresolved_questions": ["尚不清楚函式參數的預設值"],
+        "topic_tags": ["函式", "清單"],
         "suggested_task": "練習撰寫含參數的函式",
         "estimated_minutes": 45,
     }
@@ -350,6 +360,7 @@ def test_ai_feedback_is_saved_and_only_scheduled_after_user_confirmation(
     feedback = load_json(data_path("feedback"))[0]
     assert feedback["progress"] == 2
     assert feedback["ai_analysis"] == analysis
+    assert feedback["topic_tags"] == ["函式", "清單"]
     assert load_json(data_path("tasks")) == []
     assert load_json(data_path("pending_notes"))[0]["stage"] == "ai_task_confirmation"
 
@@ -365,6 +376,8 @@ def test_ai_feedback_is_saved_and_only_scheduled_after_user_confirmation(
     plan = load_json(data_path("plan"))
     assert len(tasks) == len(plan) == 1
     assert tasks[0]["source_feedback_id"] == feedback["feedback_id"]
+    assert tasks[0]["source_event_id"] == "class-1"
+    assert tasks[0]["source_class_date"] == class_date
     assert tasks[0]["deadline"] == (now.date() + timedelta(days=6)).isoformat()
     assert tasks[0]["estimated_minutes"] == 45
     assert plan[0]["status"] == "scheduled"
@@ -386,6 +399,9 @@ def test_ai_feedback_is_saved_and_only_scheduled_after_user_confirmation(
     markdown = export_learning_markdown(records, now, user["user_id"])
     assert "本堂介紹函式與清單" in markdown
     assert "練習撰寫含參數的函式" in markdown
+    assert "## 可搜尋筆記庫" in markdown
+    assert "主題：函式、清單" in markdown
+    assert "來源課程：程式設計" in markdown
 
 
 def test_ai_failure_keeps_original_feedback_and_clears_pending_state(
@@ -457,6 +473,141 @@ def test_ai_failure_keeps_original_feedback_and_clears_pending_state(
     assert "ai_analysis" not in feedback[0]
     assert load_json(data_path("pending_notes")) == []
     assert "test API failure" in replies[-1]
+
+
+def test_study_checkin_records_completion_and_replans_only_remaining_minutes(
+    monkeypatch, tmp_path
+):
+    init_data_dir(monkeypatch, tmp_path)
+    secret = "test-channel-secret"
+    monkeypatch.setenv("LINE_CHANNEL_SECRET", secret)
+    now = datetime.now(TZ).replace(second=0, microsecond=0)
+    old_start = now - timedelta(minutes=35)
+    next_date = (now.date() + timedelta(days=1)).isoformat()
+    user = {
+        "user_id": "demo_user_001",
+        "line_user_id": "U-test",
+        "study_reminders_enabled": True,
+    }
+    task = {
+        "task_id": "task-progress",
+        "user_id": user["user_id"],
+        "subject": "Python",
+        "title": "複習函式",
+        "deadline": (now.date() + timedelta(days=7)).isoformat(),
+        "estimated_minutes": 30,
+        "status": "pending",
+        "preferred_availability_id": "old-slot",
+    }
+    slots = [
+        {
+            "availability_id": "old-slot",
+            "user_id": user["user_id"],
+            "date": old_start.date().isoformat(),
+            "start_time": old_start.strftime("%H:%M"),
+            "available_minutes": 60,
+        },
+        {
+            "availability_id": "future-slot",
+            "user_id": user["user_id"],
+            "date": next_date,
+            "start_time": "20:00",
+            "available_minutes": 60,
+        },
+    ]
+    plan = [{
+        "task_id": task["task_id"],
+        "user_id": user["user_id"],
+        "availability_id": "old-slot",
+        "status": "scheduled",
+        "source": "manual",
+    }]
+    save_json(data_path("users"), [user])
+    save_json(data_path("tasks"), [task])
+    save_json(data_path("availability"), slots)
+    save_json(data_path("plan"), plan)
+
+    pushed = []
+    monkeypatch.setattr(
+        reminder_worker,
+        "push_line_message",
+        lambda target_user, reminder, text: pushed.append((reminder, text)) or True,
+    )
+    checkins = reminder_worker.run_reminder_worker_once(now)
+    assert len(checkins) == 1
+    assert checkins[0]["kind"] == "study_session_checkin"
+    assert load_json(data_path("tasks"))[0]["status"] == "pending"
+    assert "未完成 task-progress" in pushed[0][1]
+    assert reminder_worker.run_reminder_worker_once(now) == []
+
+    replies = []
+    monkeypatch.setattr(
+        line_bot,
+        "reply_line_message",
+        lambda reply_token, text, choices=None: replies.append(text),
+    )
+    client = line_bot.create_app().test_client()
+
+    for webhook_id, text in [
+        ("checkin-incomplete", "未完成 task-progress"),
+        ("checkin-remaining", "45"),
+    ]:
+        response = send_webhook(client, secret, {
+            "type": "message",
+            "webhookEventId": webhook_id,
+            "replyToken": f"reply-{webhook_id}",
+            "source": {"userId": "U-test"},
+            "message": {"type": "text", "text": text},
+        })
+        assert response.status_code == 200
+
+    updated_task = load_json(data_path("tasks"))[0]
+    updated_plan = load_json(data_path("plan"))[0]
+    checkin = load_json(data_path("reminders"))[0]
+    assert updated_task["status"] == "pending"
+    assert updated_task["estimated_minutes"] == 30
+    assert updated_task["remaining_minutes"] == 45
+    assert updated_task["preferred_availability_id"] == ""
+    assert updated_plan["availability_id"] == "future-slot"
+    assert updated_plan["status"] == "scheduled"
+    assert checkin["progress_status"] == "replanned"
+    assert checkin["remaining_minutes"] == 45
+    assert "已重新安排" in replies[-1]
+    duplicate = send_webhook(client, secret, {
+        "type": "message",
+        "webhookEventId": "checkin-remaining",
+        "replyToken": "reply-checkin-remaining-duplicate",
+        "source": {"userId": "U-test"},
+        "message": {"type": "text", "text": "45"},
+    })
+    assert duplicate.status_code == 200
+    assert load_json(data_path("tasks"))[0]["remaining_minutes"] == 45
+
+    completed_task = {
+        **task,
+        "task_id": "task-complete",
+        "preferred_availability_id": "",
+    }
+    save_json(data_path("tasks"), [updated_task, completed_task])
+    save_json(data_path("reminders"), load_json(data_path("reminders")) + [{
+        "reminder_id": "checkin-complete",
+        "user_id": user["user_id"],
+        "task_id": "task-complete",
+        "availability_id": "old-slot",
+        "kind": "study_session_checkin",
+        "status": "sent",
+        "progress_status": "awaiting_response",
+    }])
+    response = send_webhook(client, secret, {
+        "type": "message",
+        "webhookEventId": "checkin-complete-response",
+        "replyToken": "reply-checkin-complete",
+        "source": {"userId": "U-test"},
+        "message": {"type": "text", "text": "完成 task-complete"},
+    })
+    assert response.status_code == 200
+    tasks = load_json(data_path("tasks"))
+    assert next(row for row in tasks if row["task_id"] == "task-complete")["status"] == "completed"
 
 
 def test_webhook_rejects_bad_signature(monkeypatch, tmp_path):

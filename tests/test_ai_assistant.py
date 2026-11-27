@@ -34,6 +34,7 @@ def test_organize_class_feedback_sends_only_opted_in_feedback_fields(monkeypatch
         "summary": "本堂介紹函式與清單。",
         "key_points": ["函式可以重複使用"],
         "unresolved_questions": ["參數預設值尚不清楚"],
+        "topic_tags": ["函式", "參數"],
         "suggested_task": "練習撰寫含參數的函式",
         "estimated_minutes": 45,
     }

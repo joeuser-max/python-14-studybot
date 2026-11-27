@@ -48,7 +48,7 @@ def test_sunday_uses_fullcalendar_sunday_index():
     assert event["daysOfWeek"] == [0]
 
 
-def test_calendar_includes_scheduled_pending_task_with_estimated_duration():
+def test_calendar_includes_scheduled_pending_task_with_remaining_duration():
     availability = [{
         "availability_id": "slot-1",
         "date": "2026-11-24",
@@ -61,6 +61,7 @@ def test_calendar_includes_scheduled_pending_task_with_estimated_duration():
             "subject": "電子學3",
             "title": "完成 c13 (p20~p30)",
             "estimated_minutes": 60,
+            "remaining_minutes": 25,
             "status": "pending",
         },
         {
@@ -77,6 +78,7 @@ def test_calendar_includes_scheduled_pending_task_with_estimated_duration():
             "availability_id": "slot-1",
             "status": "scheduled",
             "source": "auto",
+            "scheduled_start": "2026-11-24T19:20+08:00",
         },
         {
             "task_id": "task-done",
@@ -97,8 +99,8 @@ def test_calendar_includes_scheduled_pending_task_with_estimated_duration():
     assert len(events) == 2
     study_event = events[1]
     assert study_event["title"] == "讀書｜電子學3｜完成 c13 (p20~p30)"
-    assert study_event["start"] == "2026-11-24T19:00+08:00"
-    assert study_event["end"] == "2026-11-24T20:00+08:00"
+    assert study_event["start"] == "2026-11-24T19:20+08:00"
+    assert study_event["end"] == "2026-11-24T19:45+08:00"
     assert study_event["color"] == STUDY_PLAN_COLOR
     assert study_event["extendedProps"] == {
         "kind": "study_plan",

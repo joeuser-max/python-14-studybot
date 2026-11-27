@@ -70,6 +70,7 @@ def sample_records(now: datetime | None = None) -> dict[str, list]:
         "summary": "課程練習函式與參數，仍需要釐清預設值的使用方式。",
         "key_points": ["函式能重複使用程式邏輯", "參數可將資料傳入函式"],
         "unresolved_questions": ["函式參數的預設值在什麼情況下會被使用？"],
+        "topic_tags": ["Python 函式", "參數"],
         "suggested_task": "練習撰寫包含預設參數的函式",
         "estimated_minutes": 45,
     }
@@ -80,6 +81,7 @@ def sample_records(now: datetime | None = None) -> dict[str, list]:
         "content": "今天學到 Python 函式與參數，但不太確定預設參數什麼時候會生效。",
         "progress": 3, "source": "demo", "reminder_id": "demo_reminder_programming",
         "webhook_event_id": "demo_webhook_programming",
+        "topic_tags": ["Python 函式", "參數"],
         "ai_analysis": example_analysis,
     }]
     reminders = [{

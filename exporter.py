@@ -37,6 +37,9 @@ def export_learning_markdown(records: dict, now: datetime | None = None,
         data[key] = [row for row in rows if isinstance(row, dict) and row.get("user_id") == user_id]
     events = {e["event_id"]: e for e in data["events"] if e.get("event_id")}
     tasks = {t["task_id"]: t for t in data["tasks"] if t.get("task_id")}
+    feedback_by_id = {
+        row["feedback_id"]: row for row in data["feedback"] if row.get("feedback_id")
+    }
     ai_tasks_by_feedback = {
         task.get("source_feedback_id"): task
         for task in data["tasks"]
@@ -60,8 +63,15 @@ def export_learning_markdown(records: dict, now: datetime | None = None,
 
     lines.extend(["", "## 讀書任務與 Deadline"])
     for t in sorted(data["tasks"], key=lambda t: t.get("deadline", "")):
+        source_note = feedback_by_id.get(t.get("source_feedback_id"), {})
+        source_event_id = t.get("source_event_id") or source_note.get("event_id", "")
+        source_event = events.get(source_event_id, {})
+        remaining = t.get("remaining_minutes", t.get("estimated_minutes", "未提供"))
         lines.append(f"- [{field(t.get('task_id'))}] {field(t.get('subject'))}／{field(t.get('title'))}｜期限：{field(t.get('deadline'))}"
-                     f"｜預估：{field(t.get('estimated_minutes'))} 分鐘｜狀態：{field(t.get('status'))}")
+                     f"｜原始預估：{field(t.get('estimated_minutes'))} 分鐘"
+                     f"｜剩餘：{field(remaining)} 分鐘｜狀態：{field(t.get('status'))}"
+                     f"｜來源課程：{field(source_event.get('title') or '未提供')}"
+                     f"｜來源筆記：{field(t.get('source_feedback_id') or '未提供')}")
     if not data["tasks"]:
         lines.append("- 尚無資料")
 
@@ -85,6 +95,11 @@ def export_learning_markdown(records: dict, now: datetime | None = None,
         lines.append(f"  - 筆記：{field(f.get('content'))}")
         if f.get("progress") is not None:
             lines.append(f"  - 自評理解進度：{field(f.get('progress'))}/5")
+        topic_tags = f.get("topic_tags")
+        if topic_tags is None and isinstance(f.get("ai_analysis"), dict):
+            topic_tags = f["ai_analysis"].get("topic_tags", [])
+        if isinstance(topic_tags, list) and topic_tags:
+            lines.append("  - 主題標籤：" + "、".join(field(tag) for tag in topic_tags))
         analysis = f.get("ai_analysis", {})
         if isinstance(analysis, dict):
             if analysis.get("summary"):
@@ -105,6 +120,22 @@ def export_learning_markdown(records: dict, now: datetime | None = None,
                     f"｜預估 {field(analysis.get('estimated_minutes'))} 分鐘"
                 )
         lines.append(f"  - 來源筆記 ID：{field(f.get('feedback_id'))}")
+    if not notes:
+        lines.append("- 尚無資料")
+
+    lines.extend(["", "## 可搜尋筆記庫"])
+    for f in notes:
+        event = events.get(f.get("event_id"), {})
+        tags = f.get("topic_tags")
+        if tags is None and isinstance(f.get("ai_analysis"), dict):
+            tags = f["ai_analysis"].get("topic_tags", [])
+        if not isinstance(tags, list):
+            tags = []
+        topic_text = "、".join(field(tag) for tag in tags) if tags else "未提供"
+        lines.append(
+            f"- {field(f.get('class_date'))}｜{field(event.get('title') or f.get('event_id'))}"
+            f"｜主題：{topic_text}｜筆記 ID：{field(f.get('feedback_id'))}"
+        )
     if not notes:
         lines.append("- 尚無資料")
 

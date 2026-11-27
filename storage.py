@@ -167,6 +167,9 @@ def validate_task(task: dict) -> dict:
         raise DataError("Deadline 日期格式錯誤") from exc
     if type(task.get("estimated_minutes")) is not int or task["estimated_minutes"] <= 0:
         raise DataError("預估時間必須是正整數分鐘")
+    remaining = task.get("remaining_minutes")
+    if remaining is not None and (type(remaining) is not int or remaining <= 0):
+        raise DataError("剩餘時間必須是正整數分鐘")
     if task.get("status") not in ("pending", "completed"):
         raise DataError("status 應為 pending 或 completed")
     if not isinstance(task.get("preferred_availability_id", ""), str):
@@ -255,6 +258,41 @@ def update_task(task: dict) -> list:
             task if row is existing else row
             for row in items
         ]
+    return update_json(data_path("tasks"), change)
+
+
+def record_task_progress(
+    task_id: str,
+    user_id: str,
+    completed: bool,
+    remaining_minutes: int | None = None,
+    previous_availability_id: str = "",
+) -> list:
+    if type(completed) is not bool:
+        raise DataError("完成狀態必須由使用者明確回報")
+    if not completed and (type(remaining_minutes) is not int or remaining_minutes <= 0):
+        raise DataError("剩餘時間必須是正整數分鐘")
+
+    def change(items: list) -> list:
+        found = False
+        updated_items = []
+        for task in items:
+            if task.get("task_id") != task_id or task.get("user_id") != user_id:
+                updated_items.append(task)
+                continue
+            found = True
+            updated = {**task, "status": "completed" if completed else "pending"}
+            if completed:
+                updated.pop("remaining_minutes", None)
+            else:
+                updated["remaining_minutes"] = remaining_minutes
+                if updated.get("preferred_availability_id") == previous_availability_id:
+                    updated["preferred_availability_id"] = ""
+            updated_items.append(updated)
+        if not found:
+            raise DataError("找不到要更新的讀書任務")
+        return updated_items
+
     return update_json(data_path("tasks"), change)
 
 
@@ -368,6 +406,13 @@ def validate_feedback(feedback: dict) -> dict:
         raise DataError("不支援的筆記來源")
     if not isinstance(feedback.get("reminder_id", ""), str):
         raise DataError("reminder_id 必須是字串")
+    tags = feedback.get("topic_tags", [])
+    if (
+        not isinstance(tags, list)
+        or len(tags) > 10
+        or any(not isinstance(tag, str) or not tag.strip() or len(tag.strip()) > 40 for tag in tags)
+    ):
+        raise DataError("主題標籤須為最多 10 個、每個不超過 40 字的文字")
     return feedback
 
 
@@ -399,15 +444,83 @@ def update_feedback_analysis(
             for row in items
         ):
             raise DataError("找不到要更新的課後回饋")
+        updated_items = []
+        for row in items:
+            if row.get("feedback_id") != feedback_id or row.get("user_id") != user_id:
+                updated_items.append(row)
+                continue
+            updated = {**row, "ai_analysis": analysis}
+            if "topic_tags" in analysis:
+                updated["topic_tags"] = analysis["topic_tags"]
+            updated_items.append(updated)
+        return updated_items
+
+    return update_json(data_path("feedback"), change)
+
+
+def update_feedback_topic_tags(
+    feedback_id: str,
+    user_id: str,
+    topic_tags: list[str],
+) -> list:
+    if (
+        not isinstance(topic_tags, list)
+        or len(topic_tags) > 10
+        or any(not isinstance(tag, str) or not tag.strip() or len(tag.strip()) > 40 for tag in topic_tags)
+    ):
+        raise DataError("主題標籤須為最多 10 個、每個不超過 40 字的文字")
+    tags = []
+    seen = set()
+    for tag in topic_tags:
+        normalized = tag.strip()
+        key = normalized.casefold()
+        if key not in seen:
+            tags.append(normalized)
+            seen.add(key)
+
+    def change(items: list) -> list:
+        if not any(
+            row.get("feedback_id") == feedback_id and row.get("user_id") == user_id
+            for row in items
+        ):
+            raise DataError("找不到要更新的筆記")
         return [
-            {**row, "ai_analysis": analysis}
-            if row.get("feedback_id") == feedback_id
-            and row.get("user_id") == user_id
+            {**row, "topic_tags": tags}
+            if row.get("feedback_id") == feedback_id and row.get("user_id") == user_id
             else row
             for row in items
         ]
 
     return update_json(data_path("feedback"), change)
+
+
+def search_learning_notes(
+    feedbacks: list[dict],
+    user_id: str,
+    event_id: str = "",
+    class_date: str = "",
+    topic: str = "",
+) -> list[dict]:
+    query = topic.strip().casefold()
+    matches = []
+    for feedback in feedbacks:
+        if feedback.get("user_id") != user_id:
+            continue
+        if event_id and feedback.get("event_id") != event_id:
+            continue
+        if class_date and feedback.get("class_date") != class_date:
+            continue
+        if query:
+            analysis = feedback.get("ai_analysis", {})
+            tags = feedback.get("topic_tags")
+            if tags is None and isinstance(analysis, dict):
+                tags = analysis.get("topic_tags", [])
+            if not isinstance(tags, list):
+                tags = []
+            if not any(query in tag.casefold() for tag in tags if isinstance(tag, str)):
+                continue
+        matches.append(feedback)
+    return sorted(matches, key=lambda row: row.get("received_at", ""), reverse=True)
 
 
 def create_id(prefix: str) -> str:
