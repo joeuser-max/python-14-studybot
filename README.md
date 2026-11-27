@@ -6,6 +6,27 @@
 
 LINE 課後回饋 → Gemini 分析 → 逐題確認紫色任務 → 七日拖排 → LINE 自動提醒 → 進度回報及局部重排。個人資料由 LINE Login 身份映射；不需每次手動啟動提醒任務。
 
+## 使用流程
+
+```mermaid
+flowchart LR
+    A["課後 LINE 回饋"] --> B["筆記與 AI 疑問"]
+    B --> C["逐題確認"]
+    C --> D["紫色待排"]
+    D --> E["七日規劃"]
+    E --> F["LINE 讀書提醒"]
+    F --> G["完成／剩餘進度"]
+    G -->|未完成：局部重排| E
+    G -->|完成：持續學習| A
+    classDef task fill:#f2e8ff,stroke:#8250df,color:#372064
+    class D task
+```
+
+- [圖解使用手冊：完整閉環、LINE 指令表、狀態流程與架構圖](docs/user-guide.md)
+- [跨平台 Demo：不用金鑰即可逐步操作](docs/demo-quickstart.md)
+
+**常用 LINE 指令：** `開啟網頁`、`開啟提醒`、`補筆記`、`AI補筆記`、`查看筆記`、`搜尋 關鍵字`。任務確認及進度回報的指令需在對應狀態下使用，請參閱完整指令表。
+
 ## 團隊與版本
 
 第 14 組：蕭博軒、莊育哲。原始分工為 A 模組（資料管理、網頁與 AI 分析）及 B 模組（LINE 互動、排程與提醒），最終共同整合為 ClassPulse。
@@ -73,6 +94,7 @@ bash classpulse.sh start
 ## 專案文件
 
 - [專題規格書](spec_第14組.md)
+- [圖解使用手冊](docs/user-guide.md)
 - [AI 協作紀錄](docs/ai-log.md)
 - [系統架構](docs/architecture-v2.md)
 - [服務管理](docs/local-launcher.md)
