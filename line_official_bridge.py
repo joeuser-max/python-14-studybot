@@ -18,7 +18,7 @@ from flask import Flask, abort, request
 
 import storage
 import line_bot
-from ai_assistant import ai_is_configured
+from ai_assistant import ai_is_configured, ai_provider
 from line_web_auth import AuthError, _owner
 from line_bot import verify_line_signature
 from line_friend_e2e import create_app as create_demo
@@ -91,15 +91,19 @@ def handle_personal_note(event):
         if not (kind == "file" or command or pending):
             return False
         ai_ready = (os.getenv("CLASSPULSE_FRIEND_AI_SYNC") == "1" and ai_is_configured())
+        provider = ai_provider() if ai_ready else ""
         token = event.get("replyToken", "")
         if kind == "text" and text == "AI補筆記":
             if ai_ready:
                 line_bot._set_pending({
-                    "user_id": uid, "stage": "friend_ai_consent",
+                    "user_id": uid, "stage": "friend_ai_consent", "friend_ai_provider": provider,
                     "expires_at": (now + timedelta(minutes=10)).isoformat(timespec="seconds"),
                 })
                 line_bot.reply_line_message(token,
-                    "本次課名、筆記文字及自評進度將傳送至 OpenAI API 整理，可能產生費用。"
+                    ("本次課名、筆記文字及自評進度將傳送至 Google Gemini API 整理。"
+                     "免費方案資料可能被用於改善產品；可能依帳戶設定產生費用。"
+                     if provider == "gemini" else
+                     "本次課名、筆記文字及自評進度將傳送至 OpenAI API 整理，可能產生費用。") +
                     "不會傳送 LINE ID 或整份 PDF 原檔。只使用虛構測試筆記。"
                     "同意請回覆「同意AI整理」，不同意請回覆「取消」。",
                     ["同意AI整理", "取消"])
@@ -108,9 +112,11 @@ def handle_personal_note(event):
             line_bot._mark_processed(eid, now)
             return True
         if kind == "text" and text == "同意AI整理":
-            if ai_ready and pending and pending.get("stage") == "friend_ai_consent":
+            if (ai_ready and pending and pending.get("stage") == "friend_ai_consent"
+                    and pending.get("friend_ai_provider") == provider):
                 line_bot._set_pending({
                     "user_id": uid, "stage": "weekday", "friend_ai_consent": True,
+                    "friend_ai_provider": provider,
                     "expires_at": (now + timedelta(minutes=10)).isoformat(timespec="seconds"),
                 })
                 line_bot.reply_line_message(token, "本次 AI 筆記已同意。請選擇星期。",
@@ -128,6 +134,7 @@ def handle_personal_note(event):
         user = dict(user, ai_after_class_enabled=bool(
             ai_ready and pending and pending.get("friend_ai_consent") is True
             and pending.get("stage") == "note"
+            and pending.get("friend_ai_provider") == provider
         ), _personal_question_only=True)
         if kind == "file":
             ok = line_bot._handle_file_event(event, user, now)
