@@ -128,3 +128,19 @@ END:VCALENDAR
     names = [str(e.get("SUMMARY")) for e in exported.walk("VEVENT")]
     assert "新的行程" in names
     assert len(storage.load_json(storage.data_path("external_events"))) == 1
+
+
+def test_line_checkin_does_not_replan_peer_tasks_in_visual_board(empty_db):
+    import line_bot
+    storage.save_json(storage.data_path("tasks"), [t("a"), t("b")])
+    place_manual(USER, "a", "2026-11-27", "2", 1, NOW)
+    place_manual(USER, "b", "2026-11-27", "3", 1, NOW)
+    old = next(row for row in storage.load_json(storage.data_path("plan"))
+               if row["task_id"] == "b")
+    # Simulate LINE completing A, should unplace A and leave B untouched.
+    storage.update_task({**t("a"), "status": "completed"})
+    line_bot._replan_user_tasks(USER, NOW, changed_task_id="a")
+    after = storage.load_json(storage.data_path("plan"))
+    assert len(after) == 1 and after[0] == old
+    assert not any(x["availability_id"] == "board_a"
+                   for x in storage.load_json(storage.data_path("availability")))
