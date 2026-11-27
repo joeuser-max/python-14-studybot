@@ -8,7 +8,38 @@ LINE 課後回饋 → Gemini 分析 → 逐題確認紫色任務 → 七日拖�
 
 ## 團隊與版本
 
-第 14 組：蕭博軒、莊育哲。
+第 14 組：蕭博軒、莊育哲。原始分工為 A 模組（資料管理、網頁與 AI 分析）及 B 模組（LINE 互動、排程與提醒），最終共同整合為 ClassPulse。
+
+## 主要程式檔案
+
+| 檔案 | 用途 |
+| --- | --- |
+| `app.py`、`week_board.py` | 網頁控制台、行事曆、任務拖排 |
+| `storage.py` | JSON 資料讀寫、驗證與保存 |
+| `scheduler.py`、`week_planner.py` | 讀書排程、時間及衝突限制 |
+| `line_bot.py`、`line_official_bridge.py` | LINE 訊息接收、筆記與進度回報 |
+| `line_web_auth.py` | LINE 登入與個人身份驗證 |
+| `ai_assistant.py`、`note_tasks.py` | 筆記分析、疑問及複習任務候選 |
+| `reminder_worker.py`、`line_personal_auto_worker.py` | 定期提醒與進度確認 |
+| `exporter.py`、`tracker.py` | Markdown 匯出及學習回饋統計 |
+| `classpulse.sh`、`deploy/local_service_manager.py` | 本機服務管理 |
+
+## 安裝與離線展示（不需 API 金鑰）
+
+Python 3.11 以上，在專案根目錄執行：
+
+```bash
+python3 -m venv .venv
+source .venv/bin/activate
+python -m pip install -r requirements.txt
+python -m streamlit run app.py
+```
+
+開啟 Streamlit 網頁，啟用「展示模式」即可操作虛構課表、任務拖排與 LINE Mock。Windows PowerShell 可改用 `.venv\\Scripts\\Activate.ps1` 啟用環境。展示模式不發送真實 LINE 或呼叫外部 AI。
+
+## AI 使用說明
+
+開發過程使用 AI 協助規格、程式、除錯與文件，實際採用內容經人工判斷及測試；過程見 [AI 協作紀錄](docs/ai-log.md)。產品內建 AI 用於筆記整理與疑問候選，須使用者同意才連外；任務與排程由使用者確認，合法性由程式規則檢查。
 
 - [本機一鍵啟動與維運](docs/local-launcher.md)
 - [主線整合與驗收規則](docs/main-integration-plan.md)
@@ -25,7 +56,7 @@ bash classpulse.sh start
 
 ## 歷史操作手冊（Final 1.1 與原始 A/B MVP）
 
-以下保留原有操作與歷史證據；舊的單人／Mock 限制適用於當時版本，不代表 Final 3.0 完全相同。真實展示以本頁頂部及 local-launcher 手冊為準。
+以下保留原有操作說明；舊的單人／Mock 限制適用於當時版本，不代表 Final 3.0 完全相同。真實展示以本頁頂部及 local-launcher 手冊為準。
 
 
 **Final 1.1（Draft PR #18）：**[筆記 → 每個疑問 → 人工逐項確認 → 紫色 30 分鐘任務 → 可排程](https://github.com/joeuser-max/python-14-studybot/pull/18)。AI 筆記候選位於「任務管理」；來源課程直接決定科目與「下次上課開始前」分鐘級 Deadline。已排任務可拖動底部把手（30 分鐘步進），觸發衝突時不覆蓋既有時段。日／週／月與七日板同步支援半小時；保留 V2 原有 16 節的標籤。此版仍為本機單使用者 MVP，尚未合併 main。
