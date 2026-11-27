@@ -35,7 +35,23 @@ python -m pip install -r requirements.txt
 python -m streamlit run app.py
 ```
 
-開啟 Streamlit 網頁，啟用「展示模式」即可操作虛構課表、任務拖排與 LINE Mock。Windows PowerShell 可改用 `.venv\\Scripts\\Activate.ps1` 啟用環境。展示模式不發送真實 LINE 或呼叫外部 AI。
+開啟 Streamlit 網頁，啟用「展示模式」即可操作虛構課表、任務拖排與 LINE Mock。展示模式不發送真實 LINE 或呼叫外部 AI。
+
+### Windows（PowerShell）
+
+建議使用全新 clone，避免覆寫既有資料。安裝 Python 3.11 及 Git 後，在專案根目錄執行：
+
+```powershell
+py -3.11 -m venv .venv
+.\.venv\Scripts\python.exe -m pip install -r requirements.txt
+.\.venv\Scripts\python.exe -m pytest -q
+.\.venv\Scripts\python.exe -m streamlit run app.py
+```
+
+開啟 http://localhost:8501，啟用展示模式，再按「重設展示資料」（只還原虛構展示資料）。不需要啟用 PowerShell script execution policy、LINE Token、Gemini API Key、Caddy 或 Tunnel。按 Ctrl+C 停止本機網頁。
+
+- [跨平台 Demo 操作手冊](docs/demo-quickstart.md)
+- Windows CI 執行離線測試、Chromium UI 測試及本機 HTTP health check；POSIX 權限相關的 macOS launcher 測試在 Windows 明確略過。完整真實 LINE 服務管理仍為 macOS 內部環境，不宣稱 Windows 原生支援。
 
 ## AI 使用說明
 
