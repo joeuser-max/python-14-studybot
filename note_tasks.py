@@ -145,7 +145,9 @@ def confirm_question_task(user_id: str, candidate: dict,
         "deadline_at":deadline.isoformat(timespec="minutes"),
         "estimated_minutes":DEFAULT_REVIEW_MINUTES,
         "status":"pending", "preferred_availability_id":"",
-        "source":"ai_confirmed", "source_feedback_id":feedback_id,
+        "source":"ai_confirmed",
+        "suggestion_method":candidate.get("suggestion_method","question_rule"),
+        "source_feedback_id":feedback_id,
         "source_question_key":expected_key, "source_question":question,
         "source_event_id":course["event_id"],
         "source_class_date":note.get("class_date",""),
@@ -161,3 +163,21 @@ def confirm_question_task(user_id: str, candidate: dict,
         return rows + [task]
     update_json(data_path("tasks"),save)
     return task
+
+
+def assign_note_course(user_id: str, feedback_id: str, event_id: str) -> None:
+    """Explicit reclassification from LINE Inbox to a source course."""
+    events=load_json(data_path("events"))
+    if not any(e.get("event_id")==event_id and e.get("user_id")==user_id
+               for e in events):
+        raise DataError("指定的來源課程不存在")
+    def save(rows: list) -> list:
+        if not any(row.get("feedback_id")==feedback_id
+                   and row.get("user_id")==user_id for row in rows):
+            raise DataError("找不到指定的筆記")
+        return [
+            {**row,"event_id":event_id}
+            if row.get("feedback_id")==feedback_id and row.get("user_id")==user_id
+            else row for row in rows
+        ]
+    update_json(data_path("feedback"),save)
