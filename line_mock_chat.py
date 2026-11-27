@@ -127,8 +127,9 @@ def advance_chat(state: dict, choice: str, courses: list[dict]) -> tuple[dict, d
         if match is None:
             raise ValueError("找不到選擇的課次")
         selected_day = date.fromisoformat(current["day"])
-        offset = (int(current["weekday"]) - selected_day.isoweekday()) % 7
-        class_date = selected_day + timedelta(days=offset)
+        # 補筆記對應該日以前最近一次上過的課，不錯置到未來。
+        days_ago = (selected_day.isoweekday() - int(current["weekday"])) % 7
+        class_date = selected_day - timedelta(days=days_ago)
         current.update(
             course_id=match["event_id"], course_title=match["title"],
             class_date=class_date.isoformat(), stage="progress",
