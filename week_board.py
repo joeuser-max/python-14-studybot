@@ -72,7 +72,7 @@ export default function(component) {
   matrix.replaceChildren();
   deck.replaceChildren();
   const days=data.days||[], periods=data.periods||[], tasks=data.tasks||[];
-  let dragged=null, selected=null;
+  let dragged=null, selected=null, handledDrop=false;
   const send=(v)=>setTriggerValue("action",JSON.stringify({...v,nonce:Date.now()+"-"+Math.random()}));
   const cell=(cls,txt)=>{const el=document.createElement("div");el.className=cls;el.textContent=String(txt||"");return el;};
   const pos=(el,col,row,span=1)=>{el.style.gridColumn=String(col);el.style.gridRow=row+" / span "+span;matrix.append(el);};
@@ -90,10 +90,22 @@ export default function(component) {
     const grip=cell("grip","");grip.title="橫向拖曳改變長度";
     card.append(info,grip);
     card.draggable=true;
-    card.ondragstart=(evt)=>{dragged={task_id:t.task_id,blocks};
+    card.ondragstart=(evt)=>{dragged={task_id:t.task_id,blocks};handledDrop=false;
       evt.dataTransfer.setData("text/plain",t.task_id);
       evt.dataTransfer.setData("application/x-classpulse-blocks",String(blocks));
       evt.dataTransfer.effectAllowed="move";};
+    card.ondragend=(evt)=>{
+      // Some browsers do not dispatch drop on a nested CSS grid after a
+      // component refresh. When releasing over an eligible cell, use dragend.
+      if(!handledDrop){
+        const under=document.elementFromPoint(evt.clientX,evt.clientY);
+        const target=under&&under.closest(".cell");
+        if(target&&!target.classList.contains("past")&&target.dataset.date&&target.dataset.period)
+          send({type:"drop",task_id:t.task_id,date:target.dataset.date,
+                period:target.dataset.period,blocks});
+      }
+      dragged=null;
+    };
     card.onclick=(evt)=>{if(evt.target===grip)return;selected={task_id:t.task_id,blocks};
       deck.querySelectorAll(".card").forEach(x=>x.classList.remove("selected"));card.classList.add("selected");};
     grip.onpointerdown=(evt)=>{
@@ -118,6 +130,7 @@ export default function(component) {
       const past=(d.date+"T"+String(p.hour).padStart(2,"0")+":00")<=data.now_iso.slice(0,16);
       const c=cell("cell"+(past?" past":""),"");
       c.title=d.date+" "+p.time;
+      c.dataset.date=d.date;c.dataset.period=p.label;
       c.ondragover=(e)=>{if(!past){e.preventDefault();c.classList.add("over");}};
       c.ondragleave=()=>c.classList.remove("over");
       c.ondrop=(e)=>{e.preventDefault();c.classList.remove("over");
@@ -127,7 +140,9 @@ export default function(component) {
         const actualTask=transferred || (dragged&&dragged.task_id);
         const actualBlocks=(Number.isInteger(transferBlocks)&&transferBlocks>=1&&transferBlocks<=4)
           ?transferBlocks:(dragged?dragged.blocks:1);
-        if(actualTask)send({type:"drop",task_id:actualTask,date:d.date,period:p.label,blocks:actualBlocks});};
+        if(actualTask){handledDrop=true;
+          send({type:"drop",task_id:actualTask,date:d.date,period:p.label,blocks:actualBlocks});}
+      };
       c.onclick=()=>{if(!past&&selected)send({type:"drop",task_id:selected.task_id,date:d.date,period:p.label,blocks:selected.blocks});};
       pos(c,i+2,k+2);
     });
