@@ -226,6 +226,13 @@ def install_routes(app):
     def line_login_start():
         try:
             guard()
+            if os.getenv("CLASSPULSE_FRIEND_INTERNAL") == "1":
+                try:
+                    resolve_session(request.cookies.get(SESSION_COOKIE, ""))
+                except AuthError:
+                    pass
+                else:
+                    return headers(redirect("/"))
             browser, url = begin_login()
         except (AuthError, DataError):
             return failed()
