@@ -47,7 +47,7 @@ def main():
                 try:
                     page.goto(URL, wait_until="domcontentloaded")
                     # The 16×7 matrix must exist in the browser, not merely in Python data.
-                    expect(page.locator(".matrix .cell")).to_have_count(112, timeout=25000)
+                    expect(page.locator(".matrix .cell")).to_have_count(224, timeout=25000)
                     expect(page.locator(".matrix .period")).to_have_count(16)
                     expect(page.locator(".matrix .hdr")).to_have_count(8)
 
@@ -60,7 +60,7 @@ def main():
                         expect(page.get_by_role("heading", name=label + "行事曆", exact=True)).to_be_visible(timeout=25000)
                         expect(page.locator("iframe")).not_to_have_count(0, timeout=25000)
                     page.get_by_text("七日拖排", exact=True).first.click()
-                    expect(page.locator(".matrix .cell")).to_have_count(112, timeout=25000)
+                    expect(page.locator(".matrix .cell")).to_have_count(224, timeout=25000)
 
                     # The guided route and LINE mock must be discoverable as tabs.
                     page.get_by_role("tab", name="操作引導").click()
@@ -77,7 +77,9 @@ def main():
                     expect(page.get_by_role("button", name="開始設定綠色偏好（尚不自動排程）")).to_be_visible()
                     page.get_by_role("button", name="開始設定綠色偏好（尚不自動排程）").click()
                     page.get_by_role("tab", name="行事曆與拖排").click()
-                    expect(page.get_by_role("button", name="確認偏好並一鍵安排")).to_be_visible()
+                    expect(page.get_by_role("tab", name="行事曆與拖排")).to_have_attribute("aria-selected","true",timeout=25000)
+                    expect(page.locator(".matrix .cell")).to_have_count(224,timeout=25000)
+                    expect(page.get_by_role("button", name="確認偏好並一鍵安排")).to_be_visible(timeout=25000)
                     # Here we are still in normal mode, with an empty local
                     # fresh dataset. The 8 demo cards appear only AFTER demo
                     # mode is explicitly switched on later in this test.
@@ -108,12 +110,14 @@ def main():
                     expect(page.get_by_text("保留筆記，不建立新任務", exact=False)).to_be_visible()
                     page.get_by_role("button", name="重設 LINE 虛擬對話").click()
                     expect(page.get_by_role("button", name="補筆記", exact=True)).to_be_visible()
-                    expect(page.get_by_text("本日提醒事件時間軸（可選）")).to_be_visible()
+                    expect(page.get_by_text("本日提醒事件時間軸（可選）")).to_have_count(0)
 
                     page.get_by_role("tab", name="行事曆與拖排").click()
                     expect(page.locator(".cards .card")).to_have_count(8, timeout=25000)
                     print("瀏覽器已通過：LINE 六步引導、Mock 筆記與重設", flush=True)
 
+                    # 224 half-hour cells with 16 official hourly period headers.
+                    expect(page.locator(".matrix .cell")).to_have_count(224)
                     # Resize a pending card by dragging its right-hand handle.
                     grip = page.locator(".cards .card").first.locator(".grip")
                     bounds = grip.bounding_box()
@@ -164,6 +168,20 @@ def main():
                     expect(page.locator(".cards .card")).to_have_count(7, timeout=25000)
                     expect(page.locator(".event.study")).to_have_count(4)
 
+                    # Resize an ALREADY placed block using its bottom drag handle,
+                    # not by moving it back to pending. The task count stays four.
+                    placed_handle=page.locator(".event.study").first.locator(".resize-handle")
+                    expect(placed_handle).to_be_visible(timeout=25000)
+                    hb=placed_handle.bounding_box()
+                    assert hb is not None
+                    hx,hy=hb["x"]+hb["width"]/2,hb["y"]+hb["height"]/2
+                    page.mouse.move(hx,hy)
+                    page.mouse.down()
+                    page.mouse.move(hx,hy+25,steps=6)
+                    page.mouse.up()
+                    expect(page.locator(".event.study")).to_have_count(4,timeout=25000)
+                    assert not page.get_by_text("規劃操作未儲存：", exact=False).all_text_contents()
+
                     # 一鍵安排先顯示綠色畫筆，不得立刻填入其他待排任務。
                     page.get_by_role("button", name="一鍵安排：標記綠色偏好").click()
                     expect(page.locator(".cards .card")).to_have_count(7, timeout=25000)
@@ -171,11 +189,22 @@ def main():
                     # The top row T+3 / 08:00 has no fixed classes or existing
                     # study schedule in the demonstration fixture.
                     page.locator(".matrix .cell").nth(3).click()
-                    expect(page.locator(".matrix .cell.preferred")).to_have_count(1, timeout=25000)
+                    expect(page.locator(".matrix .cell.preferred")).to_have_count(2, timeout=25000)
                     # Confirm triggers automatic fill; manually placed task stays untouched.
                     page.get_by_role("button", name="確認偏好並一鍵安排").click()
                     expect(page.locator(".cards .card")).to_have_count(0, timeout=25000)
                     expect(page.locator(".event.study")).to_have_count(11)
+
+                    # End-to-end UI: a source note question becomes a separately
+                    # confirmed purple task, and only THEN appears in the drag deck.
+                    page.get_by_role("tab", name="任務管理").click()
+                    expect(page.get_by_role("heading",
+                        name="AI：從課後疑問逐項建立複習任務")).to_be_visible()
+                    page.get_by_role("button",
+                        name="確認新增到紫色待排區").first.click()
+                    page.get_by_role("tab", name="行事曆與拖排").click()
+                    expect(page.locator(".cards .card.ai")).to_have_count(1,timeout=25000)
+                    expect(page.locator(".cards .card.ai")).to_contain_text("30 分鐘")
 
                     assert not errors, "JavaScript errors: " + "; ".join(errors)
                     print("通過：日週月檢視、五步引導、LINE 一日 Mock、七日拖排與一鍵填滿")

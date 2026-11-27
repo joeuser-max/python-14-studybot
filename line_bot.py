@@ -6,6 +6,7 @@ import os
 
 from line_note_files import clean_filename, download_line_file, extract_text
 from note_attachments import save_pdf_attachment
+from note_tasks import extract_questions, candidate_tasks, confirm_question_task, next_class_start
 from datetime import date, datetime, timedelta
 from zoneinfo import ZoneInfo
 
@@ -559,16 +560,18 @@ def _schedule_confirmed_ai_task(
         None,
     )
     if task is None:
-        deadline = (
-            date.fromisoformat(pending["class_date"]) + timedelta(days=7)
-        ).isoformat()
+        course=next((c for c in load_json(data_path("events"))
+                     if c.get("user_id")==user_id and c.get("event_id")==pending.get("event_id")),None)
+        next_start=next_class_start(course,now) if course else None
+        deadline = next_start.date().isoformat() if next_start else (now.date()+timedelta(days=7)).isoformat()
         task = {
             "task_id": create_id("task"),
             "user_id": user_id,
             "subject": pending["course_title"],
             "title": pending["suggested_task"],
             "deadline": deadline,
-            "estimated_minutes": pending["estimated_minutes"],
+            "estimated_minutes": 30,
+            **({"deadline_at":next_start.isoformat(timespec="minutes")} if next_start else {}),
             "status": "pending",
             "preferred_availability_id": "",
             "source_feedback_id": pending["feedback_id"],
@@ -647,6 +650,55 @@ def _handle_text_event(event: dict, user: dict, now: datetime) -> bool | None:
         }
         _set_pending(record)
         reply_line_message(reply_token, "請選擇要補筆記的星期（流程 10 分鐘後逾時）。", WEEKDAY_CHOICES)
+        return
+
+    if pending and pending.get("stage") == "ai_question_confirmation":
+        choices=[AI_TASK_ACCEPT,AI_TASK_SKIP]
+        index=int(pending.get("question_index",0))
+        questions=pending.get("questions",[])
+        if index>=len(questions):
+            _remove_pending(user_id)
+            reply_line_message(reply_token,"所有疑問已處理，可至 ClassPulse 任務管理查看紫色任務。")
+            return
+        if text not in choices:
+            reply_line_message(reply_token,
+                f"第 {index+1}/{len(questions)} 題：{questions[index]} "
+                "要新增 30 分鐘紫色任務嗎？Deadline 為下次上課前。",
+                choices)
+            return
+        if text==AI_TASK_ACCEPT:
+            notes=load_json(data_path("feedback"))
+            note=next((n for n in notes if n.get("feedback_id")==pending["feedback_id"]
+                       and n.get("user_id")==user_id),None)
+            courses=load_json(data_path("events"))
+            if note is None:
+                reply_line_message(reply_token,"來源筆記不存在，請先回到網站檢查")
+                return False
+            candidate=next(
+                (c for c in candidate_tasks([note],courses,
+                                            load_json(data_path("tasks")),user_id,now)
+                 if c["question"]==questions[index]),None,
+            )
+            if candidate is not None:
+                try:
+                    confirm_question_task(user_id,candidate,now)
+                except DataError as exc:
+                    reply_line_message(reply_token,f"這題尚未新增：{exc}")
+                    return False
+            # An already confirmed question may be absent from candidate_tasks.
+        index+=1
+        if index<len(questions):
+            pending["question_index"]=index
+            pending["expires_at"]=(now+timedelta(minutes=10)).isoformat(timespec="seconds")
+            _set_pending(pending)
+            reply_line_message(reply_token,
+                f"已處理本題。第 {index+1}/{len(questions)} 題：{questions[index]} "
+                "確認新增 30 分鐘任務，或先不用？",choices)
+        else:
+            _remove_pending(user_id)
+            reply_line_message(reply_token,
+                "本次所有疑問已逐題確認。已接受的任務只進紫色待排區，"
+                "不會自動覆寫課表；請至 ClassPulse 確認安排。")
         return
 
     if pending and pending.get("stage") == "ai_task_confirmation":
@@ -850,6 +902,23 @@ def _handle_text_event(event: dict, user: dict, now: datetime) -> bool | None:
             analysis,
             pending["progress"],
         )
+        questions=extract_questions({**feedback,"ai_analysis":analysis})
+        if questions:
+            pending.update({
+                "stage":"ai_question_confirmation",
+                "questions":questions,
+                "question_index":0,
+                "feedback_id":feedback["feedback_id"],
+                "expires_at":(now+timedelta(minutes=10)).isoformat(timespec="seconds"),
+            })
+            _set_pending(pending)
+            reply_line_message(
+                reply_token,response_text+
+                f"\n已辨識 {len(questions)} 項獨立疑問。第 1 題：{questions[0]}"
+                "\n要新增 30 分鐘紫色任務嗎？期限預設下次上課前。",
+                [AI_TASK_ACCEPT,AI_TASK_SKIP],
+            )
+            return
         if not analysis["suggested_task"]:
             reply_line_message(reply_token, response_text + "\n目前沒有足夠資訊提出複習任務。")
             return

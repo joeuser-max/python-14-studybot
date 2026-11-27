@@ -6,6 +6,7 @@ TZ = ZoneInfo("Asia/Taipei")
 CLASS_COLOR = "#C94352"
 AVAILABILITY_COLOR = "#23845B"
 STUDY_PLAN_COLOR = "#3166CC"
+AI_STUDY_COLOR = "#8356C4"
 
 
 def build_calendar_events(
@@ -75,14 +76,15 @@ def build_calendar_events(
                 tzinfo=TZ,
             )
         end = start + timedelta(
-            minutes=int(task.get("remaining_minutes", task["estimated_minutes"]))
+            minutes=int(row.get("scheduled_minutes") or task.get("remaining_minutes") or task["estimated_minutes"])
         )
         events.append({
             "id": f"study-{task['task_id']}",
             "title": f"讀書｜{task['subject']}｜{task['title']}",
             "start": start.isoformat(timespec="minutes"),
             "end": end.isoformat(timespec="minutes"),
-            "color": STUDY_PLAN_COLOR,
+            "color": (AI_STUDY_COLOR if task.get("source") in
+                      ("ai_confirmed", "mock_ai_confirmed") else STUDY_PLAN_COLOR),
             "extendedProps": {
                 "kind": "study_plan",
                 "task_id": task["task_id"],

@@ -37,7 +37,7 @@ def overview_events(
 
 
 def view_options(view: str) -> dict:
-    """避免舊版 30 分鐘節次重疊和 All-day 欄位。"""
+    """支援 30 分鐘閱讀與排程，並隱藏 All-day 欄位。"""
     if view not in VIEWS:
         raise ValueError("未知日曆檢視")
     return {
@@ -51,9 +51,9 @@ def view_options(view: str) -> dict:
         "allDaySlot": False,
         "slotMinTime": "08:00:00",
         "slotMaxTime": "24:00:00",
-        "slotDuration": "01:00:00",
+        "slotDuration": "00:30:00",
         "slotLabelInterval": "01:00:00",
-        "snapDuration": "01:00:00",
+        "snapDuration": "00:30:00",
         "nowIndicator": True,
         "editable": False,
         "selectable": False,

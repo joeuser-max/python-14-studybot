@@ -26,9 +26,11 @@ def rolling_dates(now: datetime) -> list[date]:
 
 
 def _start(day: date, period: str) -> datetime:
-    if period not in PERIOD_BY_LABEL:
+    half=period.endswith("+")
+    label=period[:-1] if half else period
+    if label not in PERIOD_BY_LABEL:
         raise DataError("無效的中央大學節次")
-    return datetime.combine(day, time(PERIOD_BY_LABEL[period]), tzinfo=TZ)
+    return datetime.combine(day, time(PERIOD_BY_LABEL[label],30 if half else 0), tzinfo=TZ)
 
 
 def _overlap(a: datetime, b: datetime, c: datetime, d: datetime) -> bool:
@@ -91,22 +93,29 @@ def _read_all() -> dict[str, list]:
 
 
 def _candidate(task: dict, day: date, period: str, blocks: int,
-               records: dict, now: datetime, user_id: str, *, skip_self=True) -> tuple[datetime, datetime]:
+               records: dict, now: datetime, user_id: str, *, skip_self=True,
+               duration_minutes: int | None = None) -> tuple[datetime, datetime]:
     if task.get("user_id") != user_id or task.get("status") != "pending":
         raise DataError("任務不存在或已完成")
     if type(blocks) is not int or not 1 <= blocks <= MAX_BLOCKS:
         raise DataError("任務長度須為 1–4 節；請用待排卡片右側把手調整")
     if day not in rolling_dates(now):
         raise DataError("只能排入今天到未來第六天（T+0 至 T+6）")
+    minutes = blocks*60 if duration_minutes is None else duration_minutes
+    if type(minutes) is not int or minutes<30 or minutes>240 or minutes%30:
+        raise DataError("排程長度需為 30–240 分鐘，且以 30 分鐘為單位")
     start = _start(day, period)
-    end = start + timedelta(hours=blocks)
+    end = start + timedelta(minutes=minutes)
     if end.date() > day and end.time() != time.min:
         raise DataError("任務不能跨越午夜")
     if start <= now:
         raise DataError("已過去的節次不能排入")
     deadline = date.fromisoformat(task["deadline"])
-    if end > datetime.combine(deadline + timedelta(days=1), time.min, tzinfo=TZ):
-        raise DataError("排程結束時間超過任務 Deadline")
+    deadline_at=task.get("deadline_at")
+    limit = (_datetime(deadline_at) if deadline_at
+             else datetime.combine(deadline + timedelta(days=1), time.min, tzinfo=TZ))
+    if end > limit:
+        raise DataError("排程結束時間超過任務 Deadline（下次上課開始前）")
     occupied = _busy(records["events"], records["external_events"], records["tasks"],
                      records["availability"], records["plan"], day, user_id,
                      task["task_id"] if skip_self else "")
@@ -116,7 +125,8 @@ def _candidate(task: dict, day: date, period: str, blocks: int,
 
 
 def place_manual(user_id: str, task_id: str, day: str, period: str,
-                 blocks: int, now: datetime | None = None) -> dict:
+                 blocks: int, now: datetime | None = None,
+                 duration_minutes: int | None = None) -> dict:
     """只修改被拖動的任務；不執行自動排程。"""
     now = (now or datetime.now(TZ)).astimezone(TZ)
     records = _read_all()
@@ -125,8 +135,9 @@ def place_manual(user_id: str, task_id: str, day: str, period: str,
     if not task:
         raise DataError("找不到這筆任務")
     chosen_day = date.fromisoformat(day)
-    start, _ = _candidate(task, chosen_day, period, blocks, records, now, user_id)
-    minutes = blocks * 60
+    start, _ = _candidate(task, chosen_day, period, blocks, records, now, user_id,
+                          duration_minutes=duration_minutes)
+    minutes = blocks * 60 if duration_minutes is None else duration_minutes
     slot_id = f"board_{task_id}"
     slot = {
         "availability_id": slot_id, "user_id": user_id,
@@ -175,6 +186,66 @@ def set_task_blocks(user_id: str, task_id: str, blocks: int) -> None:
     update_task(modified)
 
 
+def set_task_minutes(user_id: str, task_id: str, minutes: int) -> None:
+    """Pending-only 30-minute resize. Scheduled cards use resize_scheduled."""
+    if type(minutes) is not int or minutes<30 or minutes>240 or minutes%30:
+        raise DataError("工時需為 30–240 分鐘（每次 30 分鐘）")
+    tasks = load_json(data_path("tasks"))
+    task = next((t for t in tasks if t.get("user_id")==user_id
+                 and t.get("task_id")==task_id),None)
+    if not task:
+        raise DataError("找不到任務")
+    if any(p.get("user_id")==user_id and p.get("task_id")==task_id
+           and p.get("status")=="scheduled" for p in load_json(data_path("plan"))):
+        raise DataError("此任務已排入，請直接在行事曆上調整長度")
+    modified={**task,"estimated_minutes":minutes,"preferred_availability_id":""}
+    if task.get("remaining_minutes") is not None:
+        modified["remaining_minutes"]=minutes
+    update_task(modified)
+
+
+def resize_scheduled(user_id: str, task_id: str, minutes: int,
+                     now: datetime | None = None) -> dict:
+    """Resize a placed card without moving it, checking the entire new span.
+
+    Validation precedes all JSON writes. Other plan rows stay byte-for-byte
+    intact; a conflicting resize never overwrites another event.
+    """
+    now=(now or datetime.now(TZ)).astimezone(TZ)
+    records=_read_all()
+    task=next((t for t in records["tasks"] if t.get("user_id")==user_id
+               and t.get("task_id")==task_id),None)
+    plan=next((p for p in records["plan"] if p.get("user_id")==user_id
+               and p.get("task_id")==task_id and p.get("status")=="scheduled"),None)
+    slot=next((a for a in records["availability"] if plan and
+               a.get("availability_id")==plan.get("availability_id") and
+               a.get("user_id")==user_id),None)
+    if not task or not plan or not slot:
+        raise DataError("找不到已安排的任務")
+    start,_=_slot_interval(slot,plan)
+    label=next((n for n,h in PERIODS if h==start.hour),None)
+    if label is None or start.minute not in (0,30):
+        raise DataError("原時段無法以 30 分鐘格子調整")
+    period=label+("+" if start.minute else "")
+    _,end=_candidate(task,start.date(),period,max(1,ceil(minutes/60)),
+                     records,now,user_id,duration_minutes=minutes)
+    updated_plan={**plan,"scheduled_minutes":minutes}
+    updated_slot={**slot,"available_minutes":minutes}
+    modified={**task,"estimated_minutes":minutes}
+    if task.get("remaining_minutes") is not None:
+        modified["remaining_minutes"]=minutes
+    # Existing API stores these in three independent JSONs. Validation is
+    # atomic for all reads; concurrent modifications still need a DB migration.
+    update_task(modified)
+    update_json(data_path("availability"),lambda rows:[
+        updated_slot if x.get("availability_id")==slot["availability_id"]
+                   and x.get("user_id")==user_id else x for x in rows])
+    update_json(data_path("plan"),lambda rows:[
+        updated_plan if x.get("user_id")==user_id and x.get("task_id")==task_id
+                     and x.get("status")=="scheduled" else x for x in rows])
+    return updated_plan
+
+
 def unplace(user_id: str, task_id: str) -> None:
     """回到待排區，但不讓其他待排任務自動移動。"""
     update_json(data_path("plan"), lambda rows: [
@@ -221,7 +292,8 @@ def fill_remaining(user_id: str, now: datetime | None = None,
     placed, skipped = [], []
     for task in remaining:
         minutes = int(task.get("remaining_minutes") or task["estimated_minutes"])
-        blocks = ceil(minutes / 60)
+        required = ceil(minutes / 30)*30
+        blocks = ceil(required / 60)
         if blocks > MAX_BLOCKS:
             skipped.append((task["task_id"], "超過單次四節上限，請拆成較小任務"))
             continue
@@ -229,9 +301,11 @@ def fill_remaining(user_id: str, now: datetime | None = None,
         for day in rolling_dates(now):
             if day > date.fromisoformat(task["deadline"]):
                 break
-            for label, hour in PERIODS:
+            for hour_label, hour in PERIODS:
+              for label in (hour_label,hour_label+"+"):
                 try:
-                    start, end = _candidate(task, day, label, blocks, records, now, user_id)
+                    start, end = _candidate(task, day, label, blocks, records, now, user_id,
+                                            duration_minutes=required)
                 except DataError:
                     continue
                 preferred = preference_overlap(start, end, targets)
@@ -247,7 +321,8 @@ def fill_remaining(user_id: str, now: datetime | None = None,
                         day_workload += (finish - begin).total_seconds() / 60
                 # Soft optimization: green hit first; balance day workloads
                 # and then prefer earlier available legal starts.
-                score = (-preferred, day_workload, (day - now.date()).days, hour)
+                score = (-preferred, day_workload, (day - now.date()).days,
+                         hour, start.minute)
                 choices.append((score, day, label, start, end, preferred))
         match = min(choices, key=lambda row: row[0]) if choices else None
         if not match:
@@ -258,16 +333,16 @@ def fill_remaining(user_id: str, now: datetime | None = None,
         slot = {
             "availability_id": slot_id, "user_id": user_id,
             "date": day.isoformat(), "start_time": start.strftime("%H:%M"),
-            "available_minutes": blocks * 60, "board_generated": True,
+            "available_minutes": required, "board_generated": True,
         }
         entry = {
             "task_id": task["task_id"], "user_id": user_id, "availability_id": slot_id,
             "status": "scheduled", "source": "auto",
-            "reason": (f"偏好命中 {green_hits}/{blocks} 節"
+            "reason": (f"偏好命中 {green_hits:g} 節"
                        if green_hits else "已採用其他合法空檔（偏好並非硬限制）"),
             "preference_hits": green_hits, "preference_blocks": blocks,
             "scheduled_start": start.isoformat(timespec="minutes"),
-            "scheduled_minutes": blocks * 60, "unscheduled_alerted": False,
+            "scheduled_minutes": required, "unscheduled_alerted": False,
         }
         records["availability"].append(slot)
         records["plan"].append(entry)
@@ -319,9 +394,11 @@ def board_payload(user_id: str, now: datetime | None = None) -> dict:
             continue
         scheduled.append({
             "task_id": task_id, "title": task["title"], "subject": task["subject"],
-            "day": start.date().isoformat(), "hour": start.hour,
+            "day": start.date().isoformat(), "hour": start.hour+start.minute/60,
             "start": start.isoformat(), "end": end.isoformat(),
             "blocks": max(1, ceil((end - start).total_seconds() / 3600)),
+            "minutes": int((end-start).total_seconds()//60),
+            "is_ai": task.get("source") in ("ai_confirmed","mock_ai_confirmed"),
             "source": entry.get("source", "auto"),
         })
     external = [e for e in records["external_events"] if e.get("user_id") == user_id]
@@ -333,8 +410,12 @@ def board_payload(user_id: str, now: datetime | None = None) -> dict:
         "periods": [{"label": label, "hour": h,
                      "time": f"{h:02d}:00–{(h+1)%24:02d}:00"} for label, h in PERIODS],
         "tasks": [{"task_id": t["task_id"], "title": t["title"], "subject": t["subject"],
-                   "deadline": t["deadline"], "blocks": max(1, min(MAX_BLOCKS,
-                   ceil(int(t.get("remaining_minutes") or t["estimated_minutes"]) / 60)))}
+                   "deadline": t["deadline"],
+                   "deadline_at":t.get("deadline_at",""),
+                   "minutes":max(30,min(240,ceil(int(t.get("remaining_minutes") or t["estimated_minutes"])/30)*30)),
+                   "blocks": max(1, min(MAX_BLOCKS,
+                   ceil(int(t.get("remaining_minutes") or t["estimated_minutes"]) / 60))),
+                   "is_ai":t.get("source") in ("ai_confirmed","mock_ai_confirmed")}
                   for t in tasks if t.get("status") == "pending" and t["task_id"] not in plan],
         "scheduled": scheduled,
         "courses": [{"weekday": c["weekday"], "start": c["start_time"],

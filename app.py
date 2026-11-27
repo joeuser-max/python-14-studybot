@@ -8,12 +8,13 @@ from uuid import uuid4
 import streamlit as st
 from streamlit_calendar import calendar
 
-from ai_assistant import AIError, ai_is_configured, analyze_learning_records
+from ai_assistant import AIError, ai_is_configured, generate_question_actions
 from demo_data import mock_learning_suggestions, seed_demo_data
 from calendar_views import overview_events, view_options
 from mock_day import one_day_timeline, recommended_demo_day
 from line_mock_chat import start_chat, choices as mock_chat_choices, advance_chat, step_number
 from note_attachments import attachment_path
+from note_tasks import candidate_tasks, confirm_question_task, assign_note_course
 from exporter import export_learning_markdown
 from storage import (
     DataError, TZ, add_availabilities, add_event, add_task_to_storage,
@@ -25,7 +26,7 @@ from storage import (
 from tracker import calculate_response_rate, calculate_task_progress
 from week_planner import (
     PERIODS, board_payload, fill_remaining, place_manual, rolling_dates,
-    set_task_blocks, unplace,
+    set_task_blocks, set_task_minutes, resize_scheduled, unplace,
 )
 from week_board import render_week_board
 from schedule_preferences import mark_preferences, clear_preferences
@@ -41,6 +42,11 @@ CALENDAR_KEY = "classpulse_schedule_calendar"
 st.set_page_config(page_title="ClassPulse", page_icon="📚", layout="wide")
 st.title("ClassPulse")
 st.caption("主動式學習回饋與規劃助手")
+quick1,quick2,_=st.columns([1.2,1.2,6])
+with quick1:
+    st.link_button("ee-class", "https://ncueeclass.ncu.edu.tw/", use_container_width=True)
+with quick2:
+    st.link_button("K 書中心預約", "https://mwa.lib.ncu.edu.tw/pwaspace/", use_container_width=True)
 demo_mode = st.toggle("展示模式（使用獨立的範例資料）", key="classpulse_demo_mode", value=False)
 select_demo_storage(demo_mode)
 if demo_mode:
@@ -56,7 +62,7 @@ if demo_mode:
 
 def read_all() -> dict:
     return {name: load_json(data_path(name)) for name in
-            ("events", "tasks", "availability", "plan", "reminders", "feedback", "users", "external_events")}
+            ("events", "tasks", "availability", "plan", "reminders", "feedback", "users", "external_events", "semester_settings")}
 
 
 def own(records: list) -> list:
@@ -127,18 +133,28 @@ with pages[0]:
         st.caption("左側卡片可自由拖排；按一鍵安排先進入綠色偏好畫筆，再確認排入。綠色優先而非只能排綠色；已手動固定的任務不會移動。")
         payload = board_payload(USER_ID, board_now)
         payload["preference_mode"] = st.session_state.get("classpulse_preference_mode", False)
+        payload["error"] = st.session_state.get("board_last_error","")
         action = render_week_board(payload)
         if action:
             nonce = action.get("nonce")
             if nonce and st.session_state.get("last_board_nonce") != nonce:
                 st.session_state["last_board_nonce"] = nonce
                 try:
+                    st.session_state.pop("board_last_error",None)
                     if action.get("type") == "drop":
+                        minutes=int(action.get("duration_minutes") or int(action["blocks"])*60)
                         place_manual(USER_ID, action["task_id"], action["date"],
-                                     action["period"], int(action["blocks"]), board_now)
+                                     action["period"], int(action["blocks"]), board_now,
+                                     duration_minutes=minutes)
                         st.rerun()
                     elif action.get("type") == "resize":
-                        set_task_blocks(USER_ID, action["task_id"], int(action["blocks"]))
+                        if action.get("minutes"):
+                            set_task_minutes(USER_ID,action["task_id"],int(action["minutes"]))
+                        else:
+                            set_task_blocks(USER_ID, action["task_id"], int(action["blocks"]))
+                        st.rerun()
+                    elif action.get("type") == "resize_scheduled":
+                        resize_scheduled(USER_ID,action["task_id"],int(action["minutes"]),board_now)
                         st.rerun()
                     elif action.get("type") == "unplace":
                         unplace(USER_ID, action["task_id"])
@@ -172,7 +188,8 @@ with pages[0]:
                     elif action.get("type") == "external_edit":
                         st.session_state["editing_external_event_id"] = action.get("id")
                 except (DataError, KeyError, ValueError) as exc:
-                    st.error(f"規劃操作未儲存：{exc}")
+                    st.session_state["board_last_error"]=f"規劃操作未儲存：{exc}"
+                    st.rerun()
         if st.session_state.get("week_fill_result"):
             st.info(st.session_state.pop("week_fill_result"))
 
@@ -272,173 +289,194 @@ with pages[0]:
             st.session_state.pop("editing_external_event_id", None)
     st.divider()
 
-    st.subheader("設定每週課表")
-    with st.expander("上傳課表截圖（預覽展示）", expanded=demo_mode):
-        st.caption("可上傳 PNG、JPG 或 WebP 課表圖；目前僅顯示預覽，不會自動 OCR 辨識、建立課程或傳到 AI API。")
-        uploaded_schedule = st.file_uploader(
-            "選擇課表截圖", type=["png", "jpg", "jpeg", "webp"],
-            key="classpulse_schedule_image",
-        )
-        if uploaded_schedule is not None:
-            st.image(uploaded_schedule, caption=f"課表截圖預覽：{uploaded_schedule.name}",
-                     use_container_width=True)
-            st.caption("如需轉為可編輯課程，請使用下方「新增課程」；之後可擴充圖片辨識流程。")
-    with st.form("add_class", clear_on_submit=True):
-        name = st.text_input("課程名稱", placeholder="例如：控制系統")
-        weekday = st.selectbox("星期", list(WEEKDAYS), format_func=lambda v: WEEKDAYS[v])
-        c1, c2, c3 = st.columns(3)
-        with c1:
-            starts = st.time_input("上課時間", value=time(13, 0), step=900)
-        with c2:
-            ends = st.time_input("下課時間", value=time(15, 0), step=900)
-        with c3:
-            offset = st.number_input("下課後提醒（分鐘）", 0, 60, 10, step=5)
-        enabled = st.checkbox("啟用課後 LINE 提醒", value=True)
-        if st.form_submit_button("新增課程"):
-            event = {"event_id": create_id("event"), "user_id": USER_ID, "event_type": "class",
-                     "title": name.strip(), "weekday": weekday,
-                     "start_time": starts.strftime("%H:%M"), "end_time": ends.strftime("%H:%M"),
-                     "offset_minutes": int(offset), "prompt_template": "class_feedback", "enabled": enabled}
-            safely(lambda: add_event(event), "課程已儲存")
-
-    st.subheader("修改既有課程")
-    if courses:
-        course_ids = [course["event_id"] for course in courses]
-        clicked_course_id = (
-            selected_calendar_entry.get("id")
-            if selected_calendar_entry.get("kind") == "class"
-            else None
-        )
-        selected_course_id = clicked_course_id if clicked_course_id in course_ids else course_ids[0]
-        course_by_id = {course["event_id"]: course for course in courses}
-
-        def course_label(event_id: str) -> str:
-            course = course_by_id[event_id]
-            return (
-                f"{course['title']}｜{WEEKDAYS.get(course['weekday'], '')} "
-                f"{course['start_time']}–{course['end_time']}"
+    with st.expander("進階設定｜每週課表、課表截圖與 LINE 提醒", expanded=False):
+        st.subheader("設定每週課表")
+        with st.expander("上傳課表截圖（預覽展示）", expanded=demo_mode):
+            st.caption("可上傳 PNG、JPG 或 WebP 課表圖；目前僅顯示預覽，不會自動 OCR 辨識、建立課程或傳到 AI API。")
+            uploaded_schedule = st.file_uploader(
+                "選擇課表截圖", type=["png", "jpg", "jpeg", "webp"],
+                key="classpulse_schedule_image",
             )
+            if uploaded_schedule is not None:
+                st.image(uploaded_schedule, caption=f"課表截圖預覽：{uploaded_schedule.name}",
+                         use_container_width=True)
+                st.caption("如需轉為可編輯課程，請使用下方「新增課程」；之後可擴充圖片辨識流程。")
+        with st.form("add_class", clear_on_submit=True):
+            name = st.text_input("課程名稱", placeholder="例如：控制系統")
+            weekday = st.selectbox("星期", list(WEEKDAYS), format_func=lambda v: WEEKDAYS[v])
+            c1, c2, c3 = st.columns(3)
+            with c1:
+                starts = st.time_input("上課時間", value=time(13, 0), step=900)
+            with c2:
+                ends = st.time_input("下課時間", value=time(15, 0), step=900)
+            with c3:
+                offset = st.number_input("下課後提醒（分鐘）", 0, 60, 10, step=5)
+            enabled = st.checkbox("啟用課後 LINE 提醒", value=True)
+            if st.form_submit_button("新增課程"):
+                event = {"event_id": create_id("event"), "user_id": USER_ID, "event_type": "class",
+                         "title": name.strip(), "weekday": weekday,
+                         "start_time": starts.strftime("%H:%M"), "end_time": ends.strftime("%H:%M"),
+                         "offset_minutes": int(offset), "prompt_template": "class_feedback", "enabled": enabled}
+                safely(lambda: add_event(event), "課程已儲存")
 
-        selected_course_id = st.selectbox(
-            "選擇要修改的課程（也可先點上方行事曆）",
-            course_ids,
-            index=course_ids.index(selected_course_id),
-            format_func=course_label,
-            key=f"edit_course_select_{selected_course_id}",
-        )
-        selected_course = course_by_id[selected_course_id]
-        with st.form(f"edit_course_form_{selected_course_id}"):
-            edit_course_name = st.text_input(
-                "課程名稱",
-                value=selected_course["title"],
-                key=f"edit_course_name_{selected_course_id}",
+        st.subheader("修改既有課程")
+        if courses:
+            course_ids = [course["event_id"] for course in courses]
+            clicked_course_id = (
+                selected_calendar_entry.get("id")
+                if selected_calendar_entry.get("kind") == "class"
+                else None
             )
-            edit_weekday = st.selectbox(
-                "星期",
-                list(WEEKDAYS),
-                index=list(WEEKDAYS).index(selected_course["weekday"]),
-                format_func=lambda value: WEEKDAYS[value],
-                key=f"edit_course_weekday_{selected_course_id}",
-            )
-            edit_start_column, edit_end_column, edit_offset_column = st.columns(3)
-            with edit_start_column:
-                edit_start_time = st.time_input(
-                    "上課時間",
-                    value=time.fromisoformat(selected_course["start_time"]),
-                    step=900,
-                    key=f"edit_course_start_{selected_course_id}",
+            selected_course_id = clicked_course_id if clicked_course_id in course_ids else course_ids[0]
+            course_by_id = {course["event_id"]: course for course in courses}
+
+            def course_label(event_id: str) -> str:
+                course = course_by_id[event_id]
+                return (
+                    f"{course['title']}｜{WEEKDAYS.get(course['weekday'], '')} "
+                    f"{course['start_time']}–{course['end_time']}"
                 )
-            with edit_end_column:
-                edit_end_time = st.time_input(
-                    "下課時間",
-                    value=time.fromisoformat(selected_course["end_time"]),
-                    step=900,
-                    key=f"edit_course_end_{selected_course_id}",
-                )
-            with edit_offset_column:
-                edit_offset_minutes = st.number_input(
-                    "下課後提醒（分鐘）",
-                    min_value=0,
-                    max_value=60,
-                    value=selected_course["offset_minutes"],
-                    step=5,
-                    key=f"edit_course_offset_{selected_course_id}",
-                )
-            edit_course_enabled = st.checkbox(
-                "啟用課後 LINE 提醒",
-                value=selected_course["enabled"],
-                key=f"edit_course_enabled_{selected_course_id}",
-            )
-            if st.form_submit_button("儲存課程修改"):
-                updated_course = {
-                    **selected_course,
-                    "title": edit_course_name.strip(),
-                    "weekday": edit_weekday,
-                    "start_time": edit_start_time.strftime("%H:%M"),
-                    "end_time": edit_end_time.strftime("%H:%M"),
-                    "offset_minutes": int(edit_offset_minutes),
-                    "enabled": edit_course_enabled,
-                }
-                safely(lambda: update_event(updated_course), "課程已更新，行事曆已同步")
-    else:
-        st.info("新增第一門課後，即可在此修改課程。")
 
-    st.subheader("LINE 提醒設定")
-    users = own(records["users"])
-    current_user = users[0] if users else {"user_id": USER_ID}
-    if demo_mode:
-        st.info("展示模式：下方開關與訊息都只用於模擬，不代表 LINE 帳號已綁定或真的收到推播。")
-    elif current_user.get("line_user_id"):
-        st.success("LINE 帳號已綁定")
-    else:
-        st.info("尚未綁定 LINE。請依 README 設定綁定碼，並在 LINE 輸入「綁定 <綁定碼>」。")
-    with st.form("reminder_settings"):
-        class_reminders = st.checkbox(
-            "接收課後提醒與未排入警示",
-            value=current_user.get("reminders_enabled", True),
-        )
-        study_reminders = st.checkbox(
-            "接收讀書開始提醒與結束進度確認",
-            value=current_user.get("study_reminders_enabled", False),
-        )
-        ai_configured = ai_is_configured()
-        ai_after_class_enabled = st.checkbox(
-            "同意使用 AI 整理課後筆記並建議複習任務",
-            value=current_user.get("ai_after_class_enabled") is True,
-            key="ai_after_class_enabled",
-            disabled=(
-                not demo_mode
-                and not ai_configured
-                and current_user.get("ai_after_class_enabled") is not True
-            ),
-        )
-        if demo_mode:
-            st.caption("展示模式不會呼叫 LINE 或 OpenAI；此處僅模擬提醒及 AI 同意設定。")
+            selected_course_id = st.selectbox(
+                "選擇要修改的課程（也可先點上方行事曆）",
+                course_ids,
+                index=course_ids.index(selected_course_id),
+                format_func=course_label,
+                key=f"edit_course_select_{selected_course_id}",
+            )
+            selected_course = course_by_id[selected_course_id]
+            with st.form(f"edit_course_form_{selected_course_id}"):
+                edit_course_name = st.text_input(
+                    "課程名稱",
+                    value=selected_course["title"],
+                    key=f"edit_course_name_{selected_course_id}",
+                )
+                edit_weekday = st.selectbox(
+                    "星期",
+                    list(WEEKDAYS),
+                    index=list(WEEKDAYS).index(selected_course["weekday"]),
+                    format_func=lambda value: WEEKDAYS[value],
+                    key=f"edit_course_weekday_{selected_course_id}",
+                )
+                edit_start_column, edit_end_column, edit_offset_column = st.columns(3)
+                with edit_start_column:
+                    edit_start_time = st.time_input(
+                        "上課時間",
+                        value=time.fromisoformat(selected_course["start_time"]),
+                        step=900,
+                        key=f"edit_course_start_{selected_course_id}",
+                    )
+                with edit_end_column:
+                    edit_end_time = st.time_input(
+                        "下課時間",
+                        value=time.fromisoformat(selected_course["end_time"]),
+                        step=900,
+                        key=f"edit_course_end_{selected_course_id}",
+                    )
+                with edit_offset_column:
+                    edit_offset_minutes = st.number_input(
+                        "下課後提醒（分鐘）",
+                        min_value=0,
+                        max_value=60,
+                        value=selected_course["offset_minutes"],
+                        step=5,
+                        key=f"edit_course_offset_{selected_course_id}",
+                    )
+                edit_course_enabled = st.checkbox(
+                    "啟用課後 LINE 提醒",
+                    value=selected_course["enabled"],
+                    key=f"edit_course_enabled_{selected_course_id}",
+                )
+                if st.form_submit_button("儲存課程修改"):
+                    updated_course = {
+                        **selected_course,
+                        "title": edit_course_name.strip(),
+                        "weekday": edit_weekday,
+                        "start_time": edit_start_time.strftime("%H:%M"),
+                        "end_time": edit_end_time.strftime("%H:%M"),
+                        "offset_minutes": int(edit_offset_minutes),
+                        "enabled": edit_course_enabled,
+                    }
+                    safely(lambda: update_event(updated_course), "課程已更新，行事曆已同步")
         else:
-            st.caption(
-                "啟用後，課程名稱、你輸入的筆記與 1–5 自評進度會傳送至 OpenAI；"
-                "AI 建議的任務仍須由你在 LINE 確認才會新增。OpenAI API 可能依帳戶方案計費。"
+            st.info("新增第一門課後，即可在此修改課程。")
+
+        st.subheader("LINE 提醒設定")
+        users = own(records["users"])
+        current_user = users[0] if users else {"user_id": USER_ID}
+        if demo_mode:
+            st.info("展示模式：下方開關與訊息都只用於模擬，不代表 LINE 帳號已綁定或真的收到推播。")
+        elif current_user.get("line_user_id"):
+            st.success("LINE 帳號已綁定")
+        else:
+            st.info("尚未綁定 LINE。請依 README 設定綁定碼，並在 LINE 輸入「綁定 <綁定碼>」。")
+        with st.form("reminder_settings"):
+            class_reminders = st.checkbox(
+                "接收課後提醒與未排入警示",
+                value=current_user.get("reminders_enabled", True),
             )
-            if not ai_configured:
-                st.caption("設定 OPENAI_API_KEY 與 OPENAI_MODEL 後，才能啟用課後 AI 整理。")
-        if st.form_submit_button("儲存提醒設定"):
-            def save_reminder_settings():
-                user = {
-                    **current_user,
-                    "user_id": USER_ID,
-                    "reminders_enabled": class_reminders,
-                    "study_reminders_enabled": study_reminders,
-                    "ai_after_class_enabled": ai_after_class_enabled,
-                }
-                update_json(
-                    data_path("users"),
-                    lambda rows: [
-                        row for row in rows if row.get("user_id") != USER_ID
-                    ] + [user],
+            study_reminders = st.checkbox(
+                "接收讀書開始提醒與結束進度確認",
+                value=current_user.get("study_reminders_enabled", False),
+            )
+            ai_configured = ai_is_configured()
+            ai_after_class_enabled = st.checkbox(
+                "同意使用 AI 整理課後筆記並建議複習任務",
+                value=current_user.get("ai_after_class_enabled") is True,
+                key="ai_after_class_enabled",
+                disabled=(
+                    not demo_mode
+                    and not ai_configured
+                    and current_user.get("ai_after_class_enabled") is not True
+                ),
+            )
+            if demo_mode:
+                st.caption("展示模式不會呼叫 LINE 或 OpenAI；此處僅模擬提醒及 AI 同意設定。")
+            else:
+                st.caption(
+                    "啟用後，課程名稱、你輸入的筆記與 1–5 自評進度會傳送至 OpenAI；"
+                    "AI 建議的任務仍須由你在 LINE 確認才會新增。OpenAI API 可能依帳戶方案計費。"
                 )
-            safely(save_reminder_settings, "提醒設定已儲存")
+                if not ai_configured:
+                    st.caption("設定 OPENAI_API_KEY 與 OPENAI_MODEL 後，才能啟用課後 AI 整理。")
+            if st.form_submit_button("儲存提醒設定"):
+                def save_reminder_settings():
+                    user = {
+                        **current_user,
+                        "user_id": USER_ID,
+                        "reminders_enabled": class_reminders,
+                        "study_reminders_enabled": study_reminders,
+                        "ai_after_class_enabled": ai_after_class_enabled,
+                    }
+                    update_json(
+                        data_path("users"),
+                        lambda rows: [
+                            row for row in rows if row.get("user_id") != USER_ID
+                        ] + [user],
+                    )
+                safely(save_reminder_settings, "提醒設定已儲存")
 
 
+
+        st.divider()
+        st.markdown("**筆記庫週次設定**")
+        initial_semester = next((r.get("start") for r in records["semester_settings"]
+                                 if r.get("user_id")==USER_ID),"")
+        today_semester=datetime.now(TZ).date()
+        default_semester=date(today_semester.year,9,1) if today_semester.month>=8 else date(today_semester.year,2,1)
+        with st.form("semester_settings_form"):
+            semester_start=st.date_input(
+                "學期第 1 週的起始日（課程 → 週次筆記索引）",
+                value=date.fromisoformat(initial_semester) if initial_semester else default_semester,
+            )
+            if st.form_submit_button("儲存週次設定"):
+                update_json(data_path("semester_settings"),lambda rows:[
+                    x for x in rows if x.get("user_id")!=USER_ID
+                ]+[{"user_id":USER_ID,"start":semester_start.isoformat()}])
+                st.rerun()
+        st.toggle("顯示 LINE 一日 Mock 的舊版測試工具",
+                  value=False,key="show_legacy_line_debug",
+                  help="只影響測試頁面顯示，不刪除時間軸與快速填寫功能")
 
 with pages[1]:
     st.subheader("引導式操作｜從課表到 AI 建議")
@@ -654,25 +692,26 @@ with pages[2]:
                 st.rerun()
         st.caption("虛擬對話中的 AI 建議為明確標示的 Mock；"
                    "只有按「加入讀書任務」才會把任務放進待排盒，不會自動填入日曆。")
-        with st.expander("本日提醒事件時間軸（可選）", expanded=False):
-            daily_events = one_day_timeline(mock_day, courses, demo_board["scheduled"])
-            if not daily_events:
-                st.info("這一天尚無課程或已排讀書任務。可選其他日期，或先建立課表、拖排任務。")
-            else:
-                selected_index = st.selectbox(
-                    "選擇這一天的事件",
-                    list(range(len(daily_events))),
-                    format_func=lambda i: f"{daily_events[i]['time']}  {daily_events[i]['title']}",
-                    key="line_mock_timeline_index",
-                )
-                st.progress((selected_index + 1) / len(daily_events),
-                            text=f"第 {selected_index + 1}／{len(daily_events)} 個事件")
-                event = daily_events[selected_index]
-                st.markdown(f"**{event['time']}｜{event['title']}**")
-                st.info(event["message"])
-                st.caption("上面的通知只顯示在瀏覽器，不代表 LINE API 已傳送成功。")
+        if st.session_state.get("show_legacy_line_debug",False):
+            with st.expander("本日提醒事件時間軸（可選）", expanded=False):
+                daily_events = one_day_timeline(mock_day, courses, demo_board["scheduled"])
+                if not daily_events:
+                    st.info("這一天尚無課程或已排讀書任務。可選其他日期，或先建立課表、拖排任務。")
+                else:
+                    selected_index = st.selectbox(
+                        "選擇這一天的事件",
+                        list(range(len(daily_events))),
+                        format_func=lambda i: f"{daily_events[i]['time']}  {daily_events[i]['title']}",
+                        key="line_mock_timeline_index",
+                    )
+                    st.progress((selected_index + 1) / len(daily_events),
+                                text=f"第 {selected_index + 1}／{len(daily_events)} 個事件")
+                    event = daily_events[selected_index]
+                    st.markdown(f"**{event['time']}｜{event['title']}**")
+                    st.info(event["message"])
+                    st.caption("上面的通知只顯示在瀏覽器，不代表 LINE API 已傳送成功。")
 
-    if demo_mode:
+    if demo_mode and st.session_state.get("show_legacy_line_debug",False):
         with st.expander("模擬 LINE 課後提醒與補筆記｜快速填寫（舊版）", expanded=False):
             st.caption("以下訊息僅為網頁展示，不會送到 LINE，也不需要 Webhook／API Key。")
             if any(c.get("weekday") == mock_day.isoweekday() for c in courses):
@@ -711,6 +750,71 @@ with pages[2]:
 
 
 with pages[3]:
+    st.subheader("AI：從課後疑問逐項建立複習任務")
+    st.caption(
+        "路徑：LINE／網站保存筆記 → 疑問標籤、？或 AI 未解問題 "
+        "→ 每個疑問各一項候選 → 確認新增 → 紫色待排卡 → 手排／一鍵排入。"
+        "沒有確認前不修改任何任務、時段或期限。"
+    )
+    question_candidates=candidate_tasks(
+        own(records["feedback"]),own(records["events"]),own(records["tasks"]),USER_ID,
+    )
+    current_ai_actions=st.session_state.get("question_ai_actions",{})
+    if demo_mode:
+        st.info("展示模式使用筆記疑問規則候選，不呼叫 OpenAI；確認後紫色待排卡可實際拖排。")
+    else:
+        if question_candidates:
+            consent_question_ai=st.checkbox(
+                "同意本次將待釐清問題、來源科目與少量筆記摘錄傳至 OpenAI，逐題產生複習行動",
+                key="question_ai_consent",value=False,
+            )
+            if st.button("讓 OpenAI 逐項生成複習行動",
+                         disabled=not consent_question_ai,
+                         key="question_ai_generate"):
+                try:
+                    with st.spinner("逐項分析疑問"):
+                        current_ai_actions=generate_question_actions(question_candidates)
+                        st.session_state["question_ai_actions"]=current_ai_actions
+                    st.success("每題已對應一個 AI 建議；尚未新增任何任務")
+                except AIError as exc:
+                    st.error(str(exc))
+        st.caption("沒有 API Key 時仍可使用規則候選；規則建議不冒充真實 LLM 生成。")
+    if question_candidates:
+        st.caption(f"待確認 {len(question_candidates)} 個獨立疑問。30 分鐘為預設；"
+                   "期限由來源課程計算到下一次上課開始，沒有課程歸屬的筆記會要求先分類。")
+        for candidate in question_candidates:
+            key=candidate["source_question_key"]
+            is_model=key in current_ai_actions
+            with st.container(border=True):
+                st.markdown(
+                    f"**{'AI 複習建議' if is_model else '疑問規則候選'}｜"
+                    f"{candidate['subject'] or '未分類'}**"
+                )
+                st.write(candidate["question"])
+                suggested=current_ai_actions.get(key,candidate["suggested_task"])
+                st.write(f"**擬新增任務：** {suggested}")
+                st.caption(
+                    f"30 分鐘｜期限：{candidate['deadline_at'] or '請先指定來源課程'}"
+                    f"｜來源筆記：{candidate['source_feedback_id']}"
+                )
+                if candidate["needs_classification"]:
+                    st.warning("這份筆記尚未關聯課程，不能猜測科目或下次上課日期。"
+                               "請先在筆記庫為它指定來源課程。")
+                else:
+                    if st.button("確認新增到紫色待排區",key="confirm_question_"+key):
+                        try:
+                            item={**candidate,"suggestion_method":
+                                  "openai" if is_model else "question_rule"}
+                            confirm_question_task(USER_ID,item,title=suggested)
+                            st.success("已新增紫色任務。請到七日拖排安排時間。")
+                            st.rerun()
+                        except (DataError,ValueError,KeyError) as exc:
+                            st.error(f"尚未新增：{exc}")
+    else:
+        st.info("目前沒有尚未確認的疑問。"
+                "從 LINE 傳送含「？」的筆記、標記「疑問」，"
+                "或使用課後 AI 產生未解問題，即會出現在這裡。")
+    st.divider()
     st.subheader("新增讀書任務")
     slot_map = {s["availability_id"]: s for s in own(records["availability"])}
     task_notes = sorted(
@@ -997,50 +1101,74 @@ with pages[4]:
                         except (DataError, KeyError, ValueError) as exc:
                             st.error(f"無法接受 AI 建議：{exc}")
     st.subheader("可搜尋筆記庫")
-    library_courses = own(records["events"])
-    library_notes = own(records["feedback"])
-    course_titles = {event["event_id"]: event["title"] for event in library_courses}
-    course_options = [""] + list(course_titles)
-    note_dates = [""] + sorted(
-        {note.get("class_date", "") for note in library_notes if note.get("class_date")},
-        reverse=True,
+    st.caption("先選課程、再選第幾週，進入該週筆記。主題標籤可繼續搜尋。")
+    library_courses=own(records["events"])
+    library_notes=own(records["feedback"])
+    course_titles={event["event_id"]:event["title"] for event in library_courses}
+    course_names=["所有課程"]+sorted(set(course_titles.values()))+["未分類筆記"]
+    selected_course=st.pills(
+        "選擇課程",course_names,selection_mode="single",
+        default="所有課程",key="note_library_course_pills",
+    ) or "所有課程"
+    initial_semester=next(
+        (row.get("start") for row in records["semester_settings"]
+         if row.get("user_id")==USER_ID),""
     )
-    filter_columns = st.columns(3)
-    with filter_columns[0]:
-        selected_note_course = st.selectbox(
-            "依課程篩選",
-            course_options,
-            format_func=lambda event_id: (
-                "所有課程" if not event_id else course_titles[event_id]
-            ),
-            key="note_library_course",
-        )
-    with filter_columns[1]:
-        selected_note_date = st.selectbox(
-            "依課次日期篩選",
-            note_dates,
-            format_func=lambda value: value or "所有日期",
-            key="note_library_date",
-        )
-    with filter_columns[2]:
-        selected_note_topic = st.text_input(
-            "依主題標籤搜尋",
-            placeholder="例如：函式",
-            key="note_library_topic",
-        )
-    notes = search_learning_notes(
-        records["feedback"],
-        USER_ID,
-        event_id=selected_note_course,
-        class_date=selected_note_date,
-        topic=selected_note_topic,
+    today_semester=datetime.now(TZ).date()
+    semester_default=(date(today_semester.year,9,1)
+                      if today_semester.month>=8 else date(today_semester.year,2,1))
+    semester_anchor=date.fromisoformat(initial_semester) if initial_semester else semester_default
+
+    def week_of(note: dict) -> str:
+        try:
+            days=(date.fromisoformat(note.get("class_date",""))-semester_anchor).days
+        except ValueError:
+            return "日期未設定"
+        return "學期前" if days<0 else f"第 {days//7+1} 週"
+
+    matched_courses=[
+        note for note in library_notes
+        if selected_course=="所有課程"
+        or (selected_course=="未分類筆記"
+            and note.get("event_id") not in course_titles)
+        or course_titles.get(note.get("event_id"))==selected_course
+    ]
+    weeks=["全部週次"]+sorted(
+        {week_of(note) for note in matched_courses},
+        key=lambda key:(key=="學期前",
+                        -int(key.replace("第 ","").replace(" 週",""))
+                        if key.startswith("第 ") else 0),
     )
+    selected_week=st.pills(
+        "選擇週次",weeks,selection_mode="single",
+        default="全部週次",key="note_library_week_pills",
+    ) or "全部週次"
+    selected_note_topic=st.text_input(
+        "搜尋主題標籤",placeholder="例如：回授、Miller、Routh",
+        key="note_library_topic",
+    )
+    tag_matches=search_learning_notes(records["feedback"],USER_ID,
+                                       topic=selected_note_topic)
+    ids={note["feedback_id"] for note in matched_courses
+         if selected_week=="全部週次" or week_of(note)==selected_week}
+    notes=[note for note in tag_matches if note.get("feedback_id") in ids]
     if notes:
         for row in notes:
             with st.expander(
                 f"{row.get('class_date')}｜{course_titles.get(row.get('event_id'), '未分類筆記')}"
             ):
                 st.write(row.get("content", ""))
+                if row.get("event_id") not in course_titles and library_courses:
+                    st.caption("此 LINE 筆記尚未指定來源課程；指定後才能產生下次上課前的 AI 任務。")
+                    selected_source=st.selectbox(
+                        "指定來源課程",list(course_titles),
+                        format_func=lambda event_id:course_titles[event_id],
+                        key="classify_note_"+row["feedback_id"],
+                    )
+                    if st.button("儲存這份筆記的課程歸屬",
+                                 key="classify_confirm_"+row["feedback_id"]):
+                        safely(lambda:assign_note_course(USER_ID,row["feedback_id"],selected_source),
+                               "已指定來源課程；相關疑問任務將重新顯示")
                 filename = row.get("attachment_filename","")
                 if filename:
                     st.caption("LINE 附件：" + filename)
@@ -1124,54 +1252,4 @@ with pages[5]:
     with st.expander("預覽 Markdown 內容"):
         st.code(markdown, language="markdown")
 
-    st.subheader("AI：將課後疑問轉成待確認的複習任務")
-    ai_result_key = "demo_ai_result" if demo_mode else "ai_result"
-    if demo_mode:
-        st.caption("展示模式使用標示為 Mock 的固定範例回應，不會呼叫 OpenAI；仍需使用者確認才能新增任務。")
-        if st.button("展示 AI 建議（Mock，不呼叫 API）"):
-            st.session_state[ai_result_key] = mock_learning_suggestions(
-                own(records["feedback"]), own(records["events"]), USER_ID
-            )
-            st.success("已產生 Mock 展示結果，未呼叫外部 AI。")
-    else:
-        st.caption("以 OpenAI API 分析已蒐集的筆記。無金鑰時仍可下載 Markdown；API 失敗不修改任務。")
-        consent = st.checkbox("我已檢查待傳送的資料，並同意本次將內容送往外部 AI API 分析")
-        if st.button("分析學習紀錄", disabled=not consent):
-            try:
-                with st.spinner("分析中"):
-                    st.session_state[ai_result_key] = analyze_learning_records(
-                        own(records["feedback"]), USER_ID, markdown
-                    )
-                st.success("已產生 AI 建議；不會自動修改排程。")
-            except AIError as exc:
-                st.error(str(exc))
-    result = st.session_state.get(ai_result_key)
-    if result:
-        st.write(result.get("summary", ""))
-        suggestions = result.get("suggestions", [])
-        for idx, suggestion in enumerate(suggestions):
-            st.markdown(f"**建議 {idx+1}：{suggestion['suggested_task']}**")
-            st.caption(f"來源筆記：{suggestion['source_feedback_id']}｜未解問題：{suggestion['unresolved_question']}")
-            with st.form(f"confirm_{idx}"):
-                estimate = st.number_input("預估分鐘", min_value=1, value=45, step=15, key=f"ai_min_{idx}")
-                deadline = st.date_input("目標期限", value=datetime.now(TZ).date() + timedelta(days=7), key=f"ai_due_{idx}")
-                subject = st.text_input("科目", value=suggestion["topic"][:80], key=f"ai_subject_{idx}")
-                if st.form_submit_button("確認並新增至讀書任務"):
-                    source_note = next(
-                        (
-                            note for note in own(records["feedback"])
-                            if note.get("feedback_id") == suggestion["source_feedback_id"]
-                        ),
-                        {},
-                    )
-                    task = {"task_id": create_id("task"), "user_id": USER_ID,
-                            "subject": subject.strip(), "title": suggestion["suggested_task"][:300],
-                            "deadline": deadline.isoformat(), "estimated_minutes": int(estimate),
-                            "status": "pending", "preferred_availability_id": "",
-                            "source_feedback_id": suggestion["source_feedback_id"],
-                            "source_event_id": source_note.get("event_id", ""),
-                            "source_class_date": source_note.get("class_date", ""),
-                            "source": "ai_confirmed"}
-                    safely(lambda: add_task_to_storage(task), "已依你確認的內容新增任務")
-    elif not own(records["feedback"]):
-        st.info("目前沒有可分析的筆記。完成 LINE Webhook 整合後即可使用此功能。")
+    st.caption("筆記疑問產生任務已移到「任務管理」；此頁保留可匯出的 AI-ready Markdown。")

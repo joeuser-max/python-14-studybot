@@ -5,7 +5,7 @@
 """
 from __future__ import annotations
 
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, time, timedelta
 from typing import Iterable
 
 from storage import DataError, TZ, data_path, load_json, update_json
@@ -99,14 +99,19 @@ def clear_preferences(user_id: str) -> int:
 
 
 def preference_overlap(start: datetime, end: datetime,
-                       cells: set[tuple[str, str]]) -> int:
-    """Number of *fully included* one-hour green cells (soft score only)."""
-    count = 0
-    cursor = start
-    while cursor + timedelta(hours=1) <= end:
-        for label, hour in PERIOD_BY_LABEL.items():
-            if cursor.hour == hour and (cursor.date().isoformat(), label) in cells:
-                count += 1
-                break
-        cursor += timedelta(hours=1)
-    return count
+                       cells: set[tuple[str, str]]) -> float:
+    """Green hours = total unique interval intersection, at 30-minute precision."""
+    overlap=0.0
+    for day, label in cells:
+        if label not in PERIOD_BY_LABEL:
+            continue
+        try:
+            slot=datetime.combine(date.fromisoformat(day),
+                                  time(PERIOD_BY_LABEL[label]),tzinfo=TZ)
+        except ValueError:
+            continue
+        actual_start=max(start,slot)
+        actual_end=min(end,slot+timedelta(hours=1))
+        if actual_end>actual_start:
+            overlap+=(actual_end-actual_start).total_seconds()/3600
+    return overlap

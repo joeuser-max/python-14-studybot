@@ -30,6 +30,7 @@ FILES = {
     "processed_webhooks": "processed_webhooks.json",
     "external_events": "external_events.json",
     "preference_targets": "preference_targets.json",
+    "semester_settings": "semester_settings.json",
 }
 TZ = ZoneInfo("Asia/Taipei")
 
@@ -169,6 +170,16 @@ def validate_task(task: dict) -> dict:
         raise DataError("Deadline 日期格式錯誤") from exc
     if type(task.get("estimated_minutes")) is not int or task["estimated_minutes"] <= 0:
         raise DataError("預估時間必須是正整數分鐘")
+    deadline_at=task.get("deadline_at")
+    if deadline_at:
+        try:
+            moment=datetime.fromisoformat(deadline_at)
+            if moment.tzinfo is None or moment.date().isoformat()!=task["deadline"]:
+                raise ValueError
+        except (ValueError, TypeError) as exc:
+            raise DataError("精確 Deadline 須帶時區且日期與 deadline 一致") from exc
+    if task.get("source_question_key") and not isinstance(task.get("source_question_key"),str):
+        raise DataError("來源疑問識別碼格式錯誤")
     remaining = task.get("remaining_minutes")
     if remaining is not None and (type(remaining) is not int or remaining <= 0):
         raise DataError("剩餘時間必須是正整數分鐘")
