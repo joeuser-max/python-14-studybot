@@ -42,11 +42,11 @@ def _reserve_reminder(reminder: dict) -> dict:
     result: dict = {}
 
     def update(rows: list) -> list:
-        existing = next((row for row in rows
-                         if row.get("reminder_id") == reminder["reminder_id"]), None)
+        matches = [row for row in rows if row.get("reminder_id") == reminder["reminder_id"]]
+        if len(matches) > 1 or any(row.get("user_id") != reminder.get("user_id") for row in matches):
+            raise DataError("提醒識別碼與所有者衝突")
+        existing = matches[0] if matches else None
         if existing:
-            if existing.get("user_id") != reminder.get("user_id"):
-                raise DataError("提醒識別碼與所有者衝突")
             key = existing.get("retry_key") or reminder.get("retry_key") or str(uuid.uuid4())
             result.update({**existing, "retry_key": key})
             return [{**row, "retry_key": key}
