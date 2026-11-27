@@ -83,7 +83,7 @@ if personal_staging:
         st.rerun()
     # Mock AI and LINE behavior, but use the user's own seeded storage rows.
     demo_mode = True
-    st.info("已登入個人 Demo。網頁 AI 仍為模擬；LINE 真實 AI 依後端啟用及每次筆記同意而定，推播仍關閉。")
+    st.info("已登入個人 Demo。網頁 AI 仍為模擬；LINE 真實 AI 依後端啟用及每次筆記同意而定；自動提醒須由本人在 LINE 開啟。")
 else:
     demo_mode = st.toggle("展示模式（使用獨立的範例資料）", key="classpulse_demo_mode", value=False)
     select_demo_storage(demo_mode)
@@ -443,7 +443,10 @@ with pages[0]:
         users = own(records["users"])
         current_user = users[0] if users else {"user_id": USER_ID}
         if personal_staging:
-            st.info("個人 Demo 的提醒設定仍鎖定；若後端已啟用，請在 LINE 輸入「AI補筆記」並逐次同意外部 AI 整理。")
+            st.info("在 LINE 輸入「開啟提醒」或「關閉提醒」管理本人的自動推播；AI 整理仍逐次同意。")
+            st.caption(f"課後提醒授權：{'開啟' if current_user.get('reminders_enabled') is True else '關閉'}；"
+                       f"讀書提醒授權：{'開啟' if current_user.get('study_reminders_enabled') is True else '關閉'}。"
+                       "授權不代表 Worker 已在線。")
         elif demo_mode:
             st.info("展示模式：下方開關與訊息都只用於模擬，不代表 LINE 帳號已綁定或真的收到推播。")
         elif current_user.get("line_user_id"):
