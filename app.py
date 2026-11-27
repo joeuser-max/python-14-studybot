@@ -749,6 +749,71 @@ with pages[2]:
 
 
 with pages[3]:
+    st.subheader("AI：從課後疑問逐項建立複習任務")
+    st.caption(
+        "路徑：LINE／網站保存筆記 → 疑問標籤、？或 AI 未解問題 "
+        "→ 每個疑問各一項候選 → 確認新增 → 紫色待排卡 → 手排／一鍵排入。"
+        "沒有確認前不修改任何任務、時段或期限。"
+    )
+    question_candidates=candidate_tasks(
+        own(records["feedback"]),own(records["events"]),own(records["tasks"]),USER_ID,
+    )
+    current_ai_actions=st.session_state.get("question_ai_actions",{})
+    if demo_mode:
+        st.info("展示模式使用筆記疑問規則候選，不呼叫 OpenAI；確認後紫色待排卡可實際拖排。")
+    else:
+        if question_candidates:
+            consent_question_ai=st.checkbox(
+                "同意本次將待釐清問題和來源科目傳送至 OpenAI，產生每題一個複習行動",
+                key="question_ai_consent",value=False,
+            )
+            if st.button("讓 OpenAI 逐項生成複習行動",
+                         disabled=not consent_question_ai,
+                         key="question_ai_generate"):
+                try:
+                    with st.spinner("逐項分析疑問"):
+                        current_ai_actions=generate_question_actions(question_candidates)
+                        st.session_state["question_ai_actions"]=current_ai_actions
+                    st.success("每題已對應一個 AI 建議；尚未新增任何任務")
+                except AIError as exc:
+                    st.error(str(exc))
+        st.caption("沒有 API Key 時仍可使用規則候選；規則建議不冒充真實 LLM 生成。")
+    if question_candidates:
+        st.caption(f"待確認 {len(question_candidates)} 個獨立疑問。30 分鐘為預設；"
+                   "期限由來源課程計算到下一次上課開始，沒有課程歸屬的筆記會要求先分類。")
+        for candidate in question_candidates:
+            key=candidate["source_question_key"]
+            is_model=key in current_ai_actions
+            with st.container(border=True):
+                st.markdown(
+                    f"**{'AI 複習建議' if is_model else '疑問規則候選'}｜"
+                    f"{candidate['subject'] or '未分類'}**"
+                )
+                st.write(candidate["question"])
+                suggested=current_ai_actions.get(key,candidate["suggested_task"])
+                st.write(f"**擬新增任務：** {suggested}")
+                st.caption(
+                    f"30 分鐘｜期限：{candidate['deadline_at'] or '請先指定來源課程'}"
+                    f"｜來源筆記：{candidate['source_feedback_id']}"
+                )
+                if candidate["needs_classification"]:
+                    st.warning("這份筆記尚未關聯課程，不能猜測科目或下次上課日期。"
+                               "請先在筆記庫為它指定來源課程。")
+                else:
+                    if st.button("確認新增到紫色待排區",key="confirm_question_"+key):
+                        try:
+                            item={**candidate,"suggestion_method":
+                                  "openai" if is_model else "question_rule"}
+                            confirm_question_task(USER_ID,item,title=suggested)
+                            st.success("已新增紫色任務。請到七日拖排安排時間。")
+                            st.rerun()
+                        except (DataError,ValueError,KeyError) as exc:
+                            st.error(f"尚未新增：{exc}")
+    else:
+        st.info("目前沒有尚未確認的疑問。"
+                "從 LINE 傳送含「？」的筆記、標記「疑問」，"
+                "或使用課後 AI 產生未解問題，即會出現在這裡。")
+    st.divider()
     st.subheader("新增讀書任務")
     slot_map = {s["availability_id"]: s for s in own(records["availability"])}
     task_notes = sorted(
@@ -1162,54 +1227,4 @@ with pages[5]:
     with st.expander("預覽 Markdown 內容"):
         st.code(markdown, language="markdown")
 
-    st.subheader("AI：將課後疑問轉成待確認的複習任務")
-    ai_result_key = "demo_ai_result" if demo_mode else "ai_result"
-    if demo_mode:
-        st.caption("展示模式使用標示為 Mock 的固定範例回應，不會呼叫 OpenAI；仍需使用者確認才能新增任務。")
-        if st.button("展示 AI 建議（Mock，不呼叫 API）"):
-            st.session_state[ai_result_key] = mock_learning_suggestions(
-                own(records["feedback"]), own(records["events"]), USER_ID
-            )
-            st.success("已產生 Mock 展示結果，未呼叫外部 AI。")
-    else:
-        st.caption("以 OpenAI API 分析已蒐集的筆記。無金鑰時仍可下載 Markdown；API 失敗不修改任務。")
-        consent = st.checkbox("我已檢查待傳送的資料，並同意本次將內容送往外部 AI API 分析")
-        if st.button("分析學習紀錄", disabled=not consent):
-            try:
-                with st.spinner("分析中"):
-                    st.session_state[ai_result_key] = analyze_learning_records(
-                        own(records["feedback"]), USER_ID, markdown
-                    )
-                st.success("已產生 AI 建議；不會自動修改排程。")
-            except AIError as exc:
-                st.error(str(exc))
-    result = st.session_state.get(ai_result_key)
-    if result:
-        st.write(result.get("summary", ""))
-        suggestions = result.get("suggestions", [])
-        for idx, suggestion in enumerate(suggestions):
-            st.markdown(f"**建議 {idx+1}：{suggestion['suggested_task']}**")
-            st.caption(f"來源筆記：{suggestion['source_feedback_id']}｜未解問題：{suggestion['unresolved_question']}")
-            with st.form(f"confirm_{idx}"):
-                estimate = st.number_input("預估分鐘", min_value=1, value=45, step=15, key=f"ai_min_{idx}")
-                deadline = st.date_input("目標期限", value=datetime.now(TZ).date() + timedelta(days=7), key=f"ai_due_{idx}")
-                subject = st.text_input("科目", value=suggestion["topic"][:80], key=f"ai_subject_{idx}")
-                if st.form_submit_button("確認並新增至讀書任務"):
-                    source_note = next(
-                        (
-                            note for note in own(records["feedback"])
-                            if note.get("feedback_id") == suggestion["source_feedback_id"]
-                        ),
-                        {},
-                    )
-                    task = {"task_id": create_id("task"), "user_id": USER_ID,
-                            "subject": subject.strip(), "title": suggestion["suggested_task"][:300],
-                            "deadline": deadline.isoformat(), "estimated_minutes": int(estimate),
-                            "status": "pending", "preferred_availability_id": "",
-                            "source_feedback_id": suggestion["source_feedback_id"],
-                            "source_event_id": source_note.get("event_id", ""),
-                            "source_class_date": source_note.get("class_date", ""),
-                            "source": "ai_confirmed"}
-                    safely(lambda: add_task_to_storage(task), "已依你確認的內容新增任務")
-    elif not own(records["feedback"]):
-        st.info("目前沒有可分析的筆記。完成 LINE Webhook 整合後即可使用此功能。")
+    st.caption("筆記疑問產生任務已移到「任務管理」；此頁保留可匯出的 AI-ready Markdown。")
