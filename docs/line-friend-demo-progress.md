@@ -234,3 +234,9 @@ raw private classroom notes in GitHub comments or screenshots.
   multi-device session behavior, rate limits and live end-to-end remain
   unverified. LINE web auth inside LIFF browser is not guaranteed by LINE;
   use an external browser for this first staging route.
+
+## Step 17 — private staging
+
+- Step 16 offline: user reports 161 passed; CI #250 succeeded.
+- User reports local independent worktree, reverse-proxy health/404 checks, HTTPS and real LINE Login, own UI, drag/drop, refresh and no earlier CORS errors (6/6). Protected Quick Tunnel repeatedly asked for email even on Flask /health. A fresh Quick Tunnel with Caddy Basic Auth resolved reported symptoms; localhost/external 401/200 passed. No live credentials or tunnel URLs recorded. Real logout, second identity and signed follow/seed E2E still outstanding.
+- Step 17.7: add private Railway deployment files and startup validation, persistent /data mount, one service/replica, Gunicorn/Streamlit/Caddy, tester allowlist and idempotent synthetic seed. Disable live webhook, reminder worker and AI. Explicit tester allowlist checked at each session resolution. No cloud account created, payment authorized, live deployment, image build or persistent-volume verification yet. See deploy/README.md.
