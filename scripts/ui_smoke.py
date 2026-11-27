@@ -86,6 +86,10 @@ def main():
                     page.mouse.up()
                     expect(page.locator(".cards .card").first).to_contain_text(
                         "2 節", timeout=25000)
+                    # Resizing commits to JSON and re-mounts the two-way component.
+                    # Give Streamlit time to complete the remount before starting a
+                    # new physical drag; otherwise the drag begins on a stale node.
+                    page.wait_for_timeout(1000)
 
                     # Drag resized task to T+4 at 20:00: safely before its T+5
                     # deadline and clear of classes and the initial study plan.
