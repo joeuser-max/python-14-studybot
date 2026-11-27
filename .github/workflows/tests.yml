@@ -6,7 +6,14 @@ on:
     branches: [main, integrate/v2-line-preference-final1]
 jobs:
   pytest:
-    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    env:
+      PYTHONUTF8: '1'
+      PYTHONIOENCODING: utf-8
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -19,19 +26,26 @@ jobs:
       - name: 檢查 Python 語法
         run: python -m compileall -q app.py ai_assistant.py line_bot.py reminder_worker.py calendar_events.py
       - name: 安裝瀏覽器測試工具（僅 CI 使用）
-        run: |
-          python -m pip install "playwright>=1.56,<2"
-          python -m playwright install --with-deps chromium
+        run: python -m pip install "playwright>=1.56,<2"
+      - name: Install Chromium (Linux)
+        if: runner.os == 'Linux'
+        run: python -m playwright install --with-deps chromium
+      - name: Install Chromium (Windows)
+        if: runner.os == 'Windows'
+        run: python -m playwright install chromium
       - name: 驗證七日拖排在瀏覽器內可互動
         run: python scripts/ui_smoke.py
       - name: 保留失敗時的瀏覽器截圖
         if: failure()
         uses: actions/upload-artifact@v4
         with:
-          name: classpulse-week-board-failure
-          path: /tmp/classpulse-ui-smoke-failure.png
+          name: classpulse-week-board-failure-${{ runner.os }}
+          path: |
+            ${{ runner.temp }}/classpulse-ui-smoke-failure.png
+            ${{ runner.temp }}/classpulse-ui-smoke-server.log
           if-no-files-found: ignore
-      - name: 驗證 Streamlit 網頁 HTTP 服務可啟動
+      - name: 驗證 Streamlit 網頁 HTTP 服務可啟動 (Linux)
+        if: runner.os == 'Linux'
         run: |
           python -m streamlit run app.py --server.headless true --server.port 8501 > /tmp/classpulse-streamlit.log 2>&1 &
           streamlit_pid=$!
@@ -44,3 +58,21 @@ jobs:
           done
           cat /tmp/classpulse-streamlit.log
           exit 1
+      - name: Verify Streamlit HTTP startup (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $p = Start-Process -FilePath python -ArgumentList '-m','streamlit','run','app.py','--server.headless','true','--server.address','127.0.0.1','--server.port','8501' -PassThru
+          try {
+            $ready = $false
+            for ($i=0; $i -lt 30; $i++) {
+              try {
+                $response = Invoke-WebRequest -Uri 'http://127.0.0.1:8501/_stcore/health' -TimeoutSec 2
+                if ($response.StatusCode -eq 200) { $ready = $true; break }
+              } catch {}
+              Start-Sleep -Seconds 1
+            }
+            if (-not $ready) { throw 'Streamlit health check failed' }
+          } finally {
+            if (-not $p.HasExited) { Stop-Process -Id $p.Id -Force }
+          }
