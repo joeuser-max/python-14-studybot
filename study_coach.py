@@ -160,3 +160,48 @@ def coach_with_gemini(board: dict, metrics: dict, template: dict,
                              "responseSchema": COACH_SCHEMA, "temperature": 0.2},
     }, api_key, model)
     return validate_coach_output(raw, board, user_id, now)
+
+
+def mock_coach_for_demo(board: dict, template: dict, user_id: str,
+                        now: datetime | None = None) -> dict:
+    """明示為 Mock 的個人化排程示範；不呼叫任何模型或外部服務。"""
+    from datetime import date
+
+    now = (now or datetime.now(TZ)).astimezone(TZ)
+    available = _read_all()
+    proposed = []
+    taken = []
+    favorites = [p for p in template.get("preferred_periods", []) if p in ALLOWED_PERIODS]
+    options = list(dict.fromkeys(favorites + [p for p, _ in PERIODS]))
+    maximum = max(1, min(4, int(template.get("maximum_blocks", 2))))
+
+    for task in board.get("tasks", [])[:2]:
+        blocks = min(maximum, max(1, int(task["blocks"])))
+        match = None
+        for day in board.get("days", []):
+            for period in options:
+                try:
+                    begin, end = _candidate(
+                        next(t for t in available["tasks"] if t.get("task_id") == task["task_id"]
+                             and t.get("user_id") == user_id),
+                        date.fromisoformat(day["date"]), period, blocks,
+                        available, now, user_id,
+                    )
+                except (StopIteration, DataError, KeyError, ValueError):
+                    continue
+                if any(begin < finish and start < end for start, finish in taken):
+                    continue
+                match = {"task_id": task["task_id"], "date": day["date"],
+                         "period": period, "blocks": blocks,
+                         "reason": "【Mock】參照訓練模板的偏好時段，避開原有課程及行程"}
+                taken.append((begin, end))
+                break
+            if match:
+                break
+        if match:
+            proposed.append(match)
+
+    return validate_coach_output({
+        "summary": "【Mock 模型回應，非真實 AI 呼叫】依匿名訓練模板搜尋空檔，以下是可確認的候選方案。",
+        "actions": proposed,
+    }, board, user_id, now)
