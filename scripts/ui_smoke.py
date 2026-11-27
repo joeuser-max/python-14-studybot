@@ -87,9 +87,13 @@ def main():
                     expect(page.locator(".cards .card").first).to_contain_text(
                         "2 節", timeout=25000)
 
-                    # Drag one task to tomorrow 22:00, after any classes and planned sessions.
-                    # Row E (22:00) = 15th row, second day = index 14*7+1.
-                    page.locator(".cards .card").first.drag_to(page.locator(".matrix .cell").nth(99))
+                    # Drag one resized (2-hour) task to the last day at 20:00.
+                    # Row C (20:00) = row index 12; day T+6 = column index 6.
+                    # End 22:00 is safely within the same day, avoiding midnight-edge behavior.
+                    page.locator(".cards .card").first.drag_to(page.locator(".matrix .cell").nth(90))
+                    page.wait_for_timeout(900)
+                    problems = page.get_by_text("規劃操作未儲存：", exact=False).all_text_contents()
+                    assert not problems, "排程操作被後端拒絕：" + " ; ".join(problems)
                     expect(page.locator(".cards .card")).to_have_count(7, timeout=25000)
                     expect(page.locator(".event.study")).to_have_count(4)
 
