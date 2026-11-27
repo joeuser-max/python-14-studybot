@@ -113,3 +113,56 @@ def test_openai_and_line_real_network_are_not_falsely_claimed(monkeypatch):
     monkeypatch.delenv("LINE_CHANNEL_ACCESS_TOKEN",raising=False)
     assert reminder_worker.push_line_message(
         {"line_user_id":"U123"},{"reminder_id":"test"},"hello") is False
+
+
+
+def test_signed_line_ai_questions_need_separate_acceptances(line_setup,monkeypatch):
+    from datetime import datetime,timedelta
+    from zoneinfo import ZoneInfo
+    from week_planner import board_payload
+
+    client,replies=line_setup
+    now=datetime.now(ZoneInfo("Asia/Taipei"))
+    weekday=now.isoweekday()
+    storage.save_json(storage.data_path("events"),[{
+        "event_id":"class-ai","user_id":"demo_user_001",
+        "event_type":"class","title":"電子學（三）",
+        "weekday":weekday,"start_time":"09:00","end_time":"11:00",
+        "offset_minutes":10,"prompt_template":"class_feedback","enabled":True,
+    }])
+    storage.save_json(storage.data_path("users"),[{
+        "user_id":"demo_user_001","line_user_id":"U123",
+        "reminders_enabled":True,"study_reminders_enabled":True,
+        "ai_after_class_enabled":True,
+    }])
+    storage.save_json(storage.data_path("pending_notes"),[{
+        "user_id":"demo_user_001","stage":"note","event_id":"class-ai",
+        "class_date":now.date().isoformat(),"progress":3,
+        "expires_at":(now+timedelta(minutes=10)).isoformat(),
+    }])
+    result={
+        "summary":"課程電路模型","key_points":["回授電路","極點"],
+        "unresolved_questions":["Miller Effect 是什麼？","相位裕度如何計算？"],
+        "topic_tags":["Miller","相位裕度"],"suggested_task":"整理兩個疑問",
+        "estimated_minutes":60,
+    }
+    monkeypatch.setattr(line_bot,"organize_class_feedback",
+                        lambda *args:result)
+    assert signed(client,[message("U123","class-note","記錄兩個疑問。")]).status_code==200
+    assert len(storage.load_json(storage.data_path("tasks")))==0
+    pending=storage.load_json(storage.data_path("pending_notes"))
+    assert pending[0]["stage"]=="ai_question_confirmation"
+    assert len(pending[0]["questions"])==2
+    assert signed(client,[message("U123","confirm-q1","加入讀書任務")]).status_code==200
+    tasks=storage.load_json(storage.data_path("tasks"))
+    assert len(tasks)==1
+    assert tasks[0]["estimated_minutes"]==30
+    assert tasks[0]["source_question_key"]
+    assert tasks[0]["subject"]=="電子學（三）"
+    assert tasks[0]["deadline_at"]
+    assert board_payload("demo_user_001")["tasks"][0]["is_ai"] is True
+    assert storage.load_json(storage.data_path("pending_notes"))[0]["question_index"]==1
+    assert signed(client,[message("U123","skip-q2","先不用")]).status_code==200
+    assert len(storage.load_json(storage.data_path("tasks")))==1
+    assert storage.load_json(storage.data_path("pending_notes"))==[]
+    assert storage.load_json(storage.data_path("plan"))==[]
