@@ -6,6 +6,7 @@ import os
 
 from line_demo_registration import get_or_create_line_user, is_valid_line_user_id
 from line_demo_seed import SEEDED_STATUS, seed_line_user
+from line_web_auth import install_routes
 from line_note_files import clean_filename, download_line_file, extract_text
 from note_attachments import save_pdf_attachment
 from note_tasks import extract_questions, candidate_tasks, confirm_question_task, next_class_start
@@ -1038,6 +1039,7 @@ def _process_event(event: dict, now: datetime) -> None:
 
 def create_app() -> Flask:
     app = Flask(__name__)
+    install_routes(app)
     secret = os.getenv("LINE_CHANNEL_SECRET", "")
 
     @app.get("/health")
