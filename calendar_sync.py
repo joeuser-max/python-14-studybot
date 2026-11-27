@@ -89,6 +89,8 @@ def import_ics(events: list[dict], user_id: str, overwrite: bool = False) -> dic
         known = {e.get("id"): i for i, e in enumerate(rows)}
         for event in events:
             if event["id"] in known:
+                if rows[known[event["id"]]].get("user_id") != user_id:
+                    raise DataError("外部行程識別碼衝突")
                 if overwrite:
                     rows[known[event["id"]]] = event
                     saved.append(event["id"])
@@ -108,7 +110,7 @@ def conflicts_with_existing_plan(events: list[dict], user_id: str) -> list[dict]
     """Show possible collisions before importing; never auto-rearrange the user plan."""
     tasks = {t["task_id"]: t for t in load_json(data_path("tasks"))
              if t.get("user_id") == user_id and t.get("status") == "pending"}
-    slots = {s["availability_id"]: s for s in load_json(data_path("availability"))}
+    slots = {s["availability_id"]: s for s in load_json(data_path("availability")) if s.get("user_id") == user_id}
     existing = {
         e["id"]: e for e in load_json(data_path("external_events"))
         if e.get("user_id") == user_id
@@ -204,7 +206,7 @@ def export_week_ics(user_id: str, now: datetime | None = None) -> bytes:
             put(course["event_id"] + day.isoformat(), course["title"], start, end)
 
     tasks = {x["task_id"]: x for x in load_json(data_path("tasks")) if x.get("user_id") == user_id}
-    slots = {x["availability_id"]: x for x in load_json(data_path("availability"))}
+    slots = {x["availability_id"]: x for x in load_json(data_path("availability")) if x.get("user_id") == user_id}
     for row in load_json(data_path("plan")):
         if row.get("user_id") != user_id or row.get("status") != "scheduled":
             continue
