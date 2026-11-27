@@ -73,10 +73,12 @@ def one_day_timeline(day: date, courses: list[dict], scheduled: list[dict]) -> l
 
 def recommended_demo_day(days: list[date], courses: list[dict],
                          scheduled: list[dict]) -> date:
-    """預設挑下一個有課或有讀書任務的日子，避免初次展示出現空畫面。"""
-    for day in days:
-        if any(c.get("weekday") == day.isoweekday() for c in courses):
-            return day
-        if any(task.get("day") == day.isoformat() for task in scheduled):
-            return day
-    return days[0]
+    """優先展示七日內提醒事件最多的一天，避免只出現一兩則 Mock 通知。"""
+    if not days:
+        raise ValueError("至少需要一天才能啟動 LINE 一日展示")
+    def score(day):
+        lessons = sum(c.get("weekday") == day.isoweekday() for c in courses)
+        sessions = sum(task.get("day") == day.isoformat() for task in scheduled)
+        return lessons * 3 + sessions * 2
+    # 分數相同時保留較早的日期。
+    return max(enumerate(days), key=lambda pair: (score(pair[1]), -pair[0]))[1]
