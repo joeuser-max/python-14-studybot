@@ -122,3 +122,29 @@ raw private classroom notes in GitHub comments or screenshots.
 - Do not enable the switch on the public tunnel yet. CI and local tests,
   individual demo seeding, web authorization and two-phone E2E remain
   required. Flask/ngrok settings remain unchanged.
+
+## Step 13 — Acceptance
+
+- Mac local module + Webhook tests: user reported `20 passed` after resolving
+  missing pypdf during collection; Step 12 had terminal evidence of 9 passed in 0.35s.
+- CI run 46062648073 succeeded. No live friend follow verified.
+
+## Step 14 — Personal synthetic seed
+
+- Reuse only `demo_data.sample_records` (pure fictional templates), never copy
+  another user's runtime data or call the shared demo reset function.
+- Per-user seed lock, persisted time anchor, stable globally distinct identifiers,
+  insert-only per-file updates and final status marker allow a failed seed to
+  resume without duplicating existing rows. This is not a cross-file transaction.
+- Six datasets: 14 courses, 15 tasks (including one illustrative confirmed
+  purple 30-minute task), 7 availability slots, 3 plan entries, 5 notes
+  with mock analyses on three, 3 external events. Other unresolved questions
+  remain candidates. No actual model calls, fake sent reminders, or shared
+  webhook replay IDs. All seeded rows are marked with demo_seed_version.
+- Successful seed changes pending_seed to seeded_pending_auth; both states
+  deny LINE note/task/file/AI flows. New opt-in LINE_FRIEND_DEMO_SEED_ENABLED=1
+  only has effect with LINE_FRIEND_DEMO_ENABLED=1. Keep both off on live tunnel.
+- Existing pending users can seed on a subsequent distinct follow event or
+  trusted internal seed call; replay of an already processed event is ignored.
+- No public access, ownership audit or web authentication yet. Shared storage
+  and legacy UI remain unmodified; Step 15 must verify all read/write paths.
