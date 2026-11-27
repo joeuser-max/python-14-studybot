@@ -115,7 +115,19 @@ def main():
                     # Drag resized task to T+4 at 20:00: safely before its T+5
                     # deadline and clear of classes and the initial study plan.
                     # Row C (20:00) = row index 12; day T+4 = column index 4.
-                    page.locator(".cards .card").first.drag_to(page.locator(".matrix .cell").nth(88))
+                    # HTML5 DnD needs a real pointer journey to fire dragover/
+                    # drop reliably in Chrome (the direct drag_to shortcut can miss
+                    # nested CSS-grid destinations after a Streamlit remount).
+                    source = page.locator(".cards .card").first.bounding_box()
+                    target = page.locator(".matrix .cell").nth(88).bounding_box()
+                    assert source is not None and target is not None
+                    sx, sy = source["x"] + 17, source["y"] + source["height"] / 2
+                    tx, ty = target["x"] + target["width"] / 2, target["y"] + target["height"] / 2
+                    page.mouse.move(sx, sy)
+                    page.mouse.down()
+                    page.mouse.move(sx + 15, sy + 8, steps=4)
+                    page.mouse.move(tx, ty, steps=18)
+                    page.mouse.up()
                     page.wait_for_timeout(900)
                     problems = page.get_by_text("規劃操作未儲存：", exact=False).all_text_contents()
                     assert not problems, "排程操作被後端拒絕：" + " ; ".join(problems)
