@@ -14,7 +14,7 @@ from line_demo_seed import SEEDED_STATUS, seed_line_user
 from line_web_auth import config, install_routes
 
 
-def create_app():
+def create_app(*, register_on_open=False):
     origin, _, _ = config()
     allowed = {v.strip() for v in os.getenv("CLASSPULSE_STAGING_TEST_USERS", "").split(",") if v.strip()}
     internal = os.getenv("CLASSPULSE_FRIEND_INTERNAL") == "1"
@@ -74,7 +74,7 @@ def create_app():
                 if any(r.get("webhook_event_id") == eid
                        for r in storage.load_json(storage.data_path("processed_webhooks"))):
                     continue
-                if follow:
+                if follow or (internal and register_on_open and recover):
                     if internal:
                         users = storage.load_json(storage.data_path("users"))
                         if not any(r.get("line_user_id") == subject for r in users) and len(users) >= 2:
