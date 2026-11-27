@@ -8,6 +8,7 @@ from __future__ import annotations
 import hashlib
 import os
 import re
+import sys
 import time
 from datetime import datetime, timedelta
 
@@ -37,7 +38,7 @@ def require_config():
         raise ValueError("Personal study push requires isolated official OA opt-in")
 
 
-def sessions(now=None):
+def sessions(now=None, *, checkin=False):
     """Only user-confirmed, non-seeded AI tasks with owner-scoped note and slot."""
     require_config()
     now = (now or datetime.now(storage.TZ)).astimezone(storage.TZ)
@@ -83,7 +84,7 @@ def sessions(now=None):
                               or task["estimated_minutes"])
             except (KeyError, ValueError, TypeError):
                 continue
-            if not 1 <= minutes <= 240 or now > start + WINDOW:
+            if not 1 <= minutes <= 240 or now > start + WINDOW + (timedelta(minutes=minutes) if checkin else timedelta()):
                 continue
             identity = "\0".join((uid, tid, matching[0]["availability_id"],
                                   start.isoformat(timespec="minutes")))
@@ -143,9 +144,60 @@ def deliver_once(selection, now=None):
         return status
 
 
+def deliver_checkin_once(selection, now=None):
+    """Only after the selected session's start push was accepted."""
+    require_config()
+    now = (now or datetime.now(storage.TZ)).astimezone(storage.TZ)
+    with FileLock(str(storage.DATA_DIR / ".personal-study-worker.lock"), timeout=15):
+        matches = [s for s in sessions(now, checkin=True)
+                   if s["reminder_id"] == selection["reminder_id"]
+                   and s["user_id"] == selection["user_id"]
+                   and s["minutes"] == selection["minutes"]]
+        if len(matches) != 1:
+            return "invalid"
+        s = matches[0]
+        end = s["start"] + timedelta(minutes=s["minutes"])
+        if end > now:
+            return "waiting"
+        reminders = storage.load_json(storage.data_path("reminders"))
+        if not any(r.get("reminder_id") == s["reminder_id"]
+                   and r.get("user_id") == s["user_id"] and r.get("status") == "sent"
+                   and r.get("personal_study_test") is True for r in reminders):
+            return "invalid"
+        rid = "checkin_" + s["reminder_id"]
+        reminder = {
+            "reminder_id": rid, "user_id": s["user_id"], "task_id": s["task_id"],
+            "availability_id": s["availability_id"], "event_id": "", "class_date": "",
+            "kind": "study_session_checkin", "scheduled_at": end.isoformat(timespec="minutes"),
+            "session_start": s["start"].isoformat(timespec="minutes"),
+            "session_minutes": s["minutes"], "status": "pending", "sent_at": "",
+            "retry_key": "", "progress_status": "awaiting_response", "personal_study_test": True,
+        }
+        saved = _reserve_reminder(reminder)
+        if saved.get("status") == "sent":
+            return "sent"
+        text = (f"讀書時段結束囉！任務：{s['task']['title']}。\n"
+                f"請回覆「完成 {s['task_id']}」或「未完成 {s['task_id']}」。"
+                "未完成後會詢問剩餘分鐘數；不回覆不會自動標記完成。")
+        try:
+            accepted = push_line_message(s["user"], saved, text)
+        except requests.HTTPError as exc:
+            resp = exc.response
+            accepted = (resp is not None and resp.status_code == 409
+                        and bool(resp.headers.get("x-line-accepted-request-id")))
+        except requests.RequestException:
+            accepted = False
+        status = "sent" if accepted else "failed"
+        _mark_reminder(rid, status, now.isoformat(timespec="seconds") if accepted else "", s["user_id"])
+        return status
+
+
 def main():
     require_config()
-    options = sessions()
+    checkin = sys.argv[1:] == ["--checkin"]
+    if sys.argv[1:] and not checkin:
+        raise SystemExit("Usage: python line_personal_study_worker.py [--checkin]")
+    options = sessions(checkin=checkin)
     if not options:
         print("沒有可測試的已排 AI 任務。請先用 LINE AI補筆記確認任務，再拖排未來時段。")
         return
@@ -156,13 +208,27 @@ def main():
     if not raw.isdecimal() or not 1 <= int(raw) <= len(options):
         return
     selected = options[int(raw)-1]
-    if input("同意在該時段將已保存的 AI 摘要推送至該任務自己的 LINE？輸入 SEND：").strip() != "SEND":
+    prompt = ("同意此任務開始及結束時向自己的 LINE 推送？輸入 SEND：" if checkin else\n              "同意在該時段將已保存的 AI 摘要推送至該任務自己的 LINE？輸入 SEND：")\n    if input(prompt).strip() != "SEND":
         return
     print("已選定單一讀書時段；移動/取消任務、Ctrl+C 或超過 15 分鐘窗口即停止。")
+    if checkin:
+        # A prior successful start permits resuming directly at check-in.
+        started = any(r.get("reminder_id") == selected["reminder_id"]
+                      and r.get("user_id") == selected["user_id"]
+                      and r.get("status") == "sent" and r.get("personal_study_test") is True
+                      for r in storage.load_json(storage.data_path("reminders")))
+    else:
+        started = False
     while True:
-        status = deliver_once(selected)
-        print(f"{datetime.now(storage.TZ):%H:%M:%S} | {status}", flush=True)
-        if status in ("sent", "invalid"):
+        phase = "checkin" if checkin and started else "start"
+        status = deliver_checkin_once(selected) if phase == "checkin" else deliver_once(selected)
+        print(f"{datetime.now(storage.TZ):%H:%M:%S} | {phase} | {status}", flush=True)
+        if status == "invalid":
+            return
+        if status == "sent":
+            if checkin and not started:
+                started = True
+                continue
             return
         time.sleep(15 if status == "waiting" else 30)
 
