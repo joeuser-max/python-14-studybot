@@ -80,3 +80,39 @@ def test_demo_mock_coach_returns_valid_candidate_without_network(monkeypatch, da
     assert len(result["actions"]) == 1
     assert result["actions"][0]["task_id"] == "t1"
     assert result["rejected"] == []
+
+
+def test_ai_can_propose_auto_reschedule_without_touching_manual_tasks(monkeypatch, data):
+    from week_planner import board_payload, fill_remaining, place_manual
+
+    current = storage.load_json(storage.data_path("tasks"))
+    storage.save_json(storage.data_path("tasks"), current + [{
+        **current[0], "task_id": "t2", "title": "補充練習", "deadline": "2026-11-30",
+    }])
+    place_manual(USER, "t1", "2026-11-27", "2", 1, NOW)
+    assert len(fill_remaining(USER, NOW)["placed"]) == 1
+    before = storage.load_json(storage.data_path("plan"))
+    manually_pinned = next(p for p in before if p["task_id"] == "t1")
+    board = board_payload(USER, NOW)
+    assert not board["tasks"]
+    assert {s["source"] for s in board["scheduled"]} == {"manual", "auto"}
+
+    forbidden = study_coach.validate_coach_output({
+        "summary": "我想覆寫手動排程",
+        "actions": [{"task_id": "t1", "date": "2026-11-28",
+                     "period": "A", "blocks": 1, "reason": "不能移動手排"}],
+    }, board, USER, NOW)
+    assert not forbidden["actions"]
+
+    mock = study_coach.mock_coach_for_demo(
+        board, {"preferred_periods": ["A", "B"], "maximum_blocks": 1},
+        USER, now=NOW,
+    )
+    assert len(mock["actions"]) == 1
+    assert mock["actions"][0]["task_id"] == "t2"
+    action = mock["actions"][0]
+    place_manual(USER, action["task_id"], action["date"],
+                 action["period"], action["blocks"], NOW)
+    after = storage.load_json(storage.data_path("plan"))
+    assert next(p for p in after if p["task_id"] == "t1") == manually_pinned
+    assert next(p for p in after if p["task_id"] == "t2")["source"] == "manual"
