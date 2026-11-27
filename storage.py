@@ -209,10 +209,10 @@ def validate_availability(slot: dict, existing: list | None = None) -> dict:
     ):
         raise DataError("MVP 不支援跨午夜時段")
     for old in existing or []:
-        if old.get("user_id") != slot["user_id"] or old.get("date") != slot["date"]:
-            continue
         if old.get("availability_id") == slot["availability_id"]:
             raise DataError("時段 ID 已存在")
+        if old.get("user_id") != slot["user_id"] or old.get("date") != slot["date"]:
+            continue
         old_begin = datetime.combine(selected_date, _clock(old["start_time"]))
         old_end = old_begin + timedelta(minutes=old["available_minutes"])
         if beginning < old_end and old_begin < ending:
@@ -233,10 +233,10 @@ def update_event(event: dict) -> list:
     validate_event(event)
 
     def change(items: list) -> list:
-        if not any(row.get("event_id") == event["event_id"] for row in items):
+        if not any(row.get("event_id") == event["event_id"] and row.get("user_id") == event["user_id"] for row in items):
             raise DataError("找不到要修改的課程，請重新整理後再試")
         return [
-            event if row.get("event_id") == event["event_id"] else row
+            event if row.get("event_id") == event["event_id"] and row.get("user_id") == event["user_id"] else row
             for row in items
         ]
     return update_json(data_path("events"), change)
@@ -395,8 +395,18 @@ def update_task_status(tasks: list, task_id: str, status: str) -> list:
     return [{**item, "status": status} if item.get("task_id") == task_id else item for item in tasks]
 
 
-def set_task_status(task_id: str, status: str) -> list:
-    return update_json(data_path("tasks"), lambda items: update_task_status(items, task_id, status))
+def set_task_status(task_id: str, status: str, user_id: str) -> list:
+    """Persist status changes only for a server-resolved owner."""
+    return update_json(data_path("tasks"), lambda items: [
+        {**row, "status": status} if row.get("task_id") == task_id and row.get("user_id") == user_id else row
+        for row in items
+    ] if status in ("pending", "completed") and user_id and any(
+        row.get("task_id") == task_id and row.get("user_id") == user_id for row in items
+    ) else _reject_task_status())
+
+
+def _reject_task_status():
+    raise DataError("任務狀態不正確或找不到指定任務")
 
 
 def validate_feedback(feedback: dict) -> dict:
