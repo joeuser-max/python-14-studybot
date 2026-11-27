@@ -148,3 +148,36 @@ raw private classroom notes in GitHub comments or screenshots.
   trusted internal seed call; replay of an already processed event is ignored.
 - No public access, ownership audit or web authentication yet. Shared storage
   and legacy UI remain unmodified; Step 15 must verify all read/write paths.
+
+## Step 14 — Acceptance
+
+- @Onlynotonly reported local tests passed after Step 14 instructions
+  (full local pytest output/count was not supplied).
+- CI run 46063100830 passed on commit 4315736.
+
+## Step 15 — Ownership audit and targeted fixes (verification pending)
+
+- Storage: course updates match owner plus resource ID; status writes require
+  user_id, and new availability IDs cannot collide with another owner's slot.
+- Board/calendar: owner-scoped slot/task lookups and write guards; calendar
+  imports cannot overwrite another owner's external event by ID.
+- Scheduler: separate owners' time budgets; reminder joins use owner and ID.
+  Legacy ownerless scheduler rows resolve only when the task owner is unique.
+  Plan bridge rejects explicit foreign owner rather than rewriting it.
+- Worker: reminder reservation rejects ambiguous/foreign IDs, status changes
+  and plan lookups match owner, gated accounts cannot send even if preference
+  flags are set. This does not implement transactional consent revocation.
+- LINE: explicit group/room and standby events cannot enter private handlers.
+  Legacy signed payloads without source.type still supported for regression
+  compatibility. Existing pending/seeded accounts remain blocked.
+- Web: legacy read_all filters by the fixed server-side MVP ID. A configured
+  CLASSPULSE_PUBLIC_WEB=1 fails closed before data reads; default mode remains
+  local-only and unauthenticated. Never publish default mode. No public URL
+  query ID accepted as identity.
+- Reviewed notes candidate confirmation, source ownership, attachments naming,
+  exports, AI input filtering and metrics. They still rely on trusted caller
+  identity; no full authenticated session boundary has been implemented.
+- Added 10 adversarial ownership tests plus a signed group-message regression.
+  Shared JSON writes remain non-transactional across files. Raw storage APIs,
+  direct file access, identity/session switching and deployment need further
+  review at Step 16. This is targeted hardening, not a security certification.
