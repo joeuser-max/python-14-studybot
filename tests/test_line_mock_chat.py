@@ -45,7 +45,7 @@ def test_guided_line_chat_full_flow_and_explicit_feedback_then_task():
     assert effect["type"] == "save_feedback"
     assert effect["event_id"] == chosen_id
     assert effect["progress"] == 3
-    assert effect["class_date"] != ""
+    assert effect["class_date"] == "2026-11-25"  # 所選日以前最近一堂星期三
     assert "【Mock AI" in chat["messages"][-1]["text"]
     assert "加入讀書任務" in [x[0] for x in choices(chat, COURSES)]
 
