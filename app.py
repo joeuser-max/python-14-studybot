@@ -23,6 +23,8 @@ from week_planner import (
 )
 from week_board import render_week_board
 from calendar_sync import preview_ics, import_ics, export_week_ics, edit_imported_event
+from study_metrics import personal_metrics, BENCHMARK_TEMPLATES, anonymized_benchmark
+from study_coach import CoachError, coach_with_gemini
 
 USER_ID = "demo_user_001"  # MVP：單一測試使用者；正式多人版須加入登入機制
 WEEKDAYS = {1: "週一", 2: "週二", 3: "週三", 4: "週四", 5: "週五", 6: "週六", 7: "週日"}
@@ -566,6 +568,69 @@ with pages[2]:
     b.metric("有回覆課次", reminder_stats["answered"])
     c.metric("提醒回覆率", f"{reminder_stats['rate']}%" if reminder_stats["rate"] is not None else "尚無資料")
     st.caption(f"明確完成讀書任務：{task_stats['completed']} / {task_stats['total']}；回覆率不等於學習完成率。")
+    st.subheader("學習儀表板")
+    metric = personal_metrics(records["tasks"], records["reminders"], USER_ID)
+    completed_label = (f"{metric['completion']}%" if metric["completion"] is not None else "尚無資料")
+    checkin_label = (f"{metric['checkin_rate']}%" if metric["checkin_rate"] is not None
+                     else "尚無可核對紀錄")
+    m1, m2, m3 = st.columns(3)
+    m1.metric("任務完成率", completed_label, help="使用者自行勾選完成的任務數／全部任務數")
+    m2.metric("LINE 回報完成率", checkin_label,
+              help="成功送出 LINE 結束確認後，回報完成的比例；不代表客觀效率")
+    m3.metric("Focus XP", f"{metric['xp']}｜Lv.{metric['level']}",
+              help="完成任務 +20 XP；有對應 LINE 回報且完成再 +10 XP。遊戲點數不是 Elo 或學習能力排名")
+    st.caption("這些是行為紀錄，不等於考試成績或學習效率。"
+               "LINE 回報比自行點完成多一道事件紀錄，但仍不能防止虛報；目前沒有學校排行榜。")
+
+    with st.expander("AI 訓練教練｜把別人的學習節奏適配到自己的七日課表", expanded=False):
+        st.caption("現階段提供三種**匿名示範訓練模板**，不代表真實中央大學學生平均值、"
+                   "附近的人或已加入的群組。AI 會考慮你已有課程、時間衝突、Deadline 和待排任務；"
+                   "不會直接改行事曆。")
+        style_name = st.selectbox("選擇參考訓練型態", list(BENCHMARK_TEMPLATES),
+                                  key="coach_template_style")
+        template = BENCHMARK_TEMPLATES[style_name]
+        st.caption(f"{template['name']}｜每週 {template['sessions_per_week']} 次｜"
+                   f"單次最多 {template['maximum_blocks']} 節｜{template['goal']}")
+        profile = anonymized_benchmark(metric, template)
+        st.json(profile, expanded=False)
+        if demo_mode:
+            st.info("目前為展示模式；不呼叫 Gemini API，以上為可供 AI 適配的規則模板。")
+        else:
+            consent_gemini = st.checkbox(
+                "我同意本次將待排任務名稱、課程時段、外部行程時段與彙總指標送至 Google Gemini API；"
+                "免費層資料使用條款與配額可能不同於付費方案",
+                value=False, key="coach_gemini_consent",
+            )
+            if st.button("讓 AI 將訓練模板適配到我的課表", disabled=not consent_gemini,
+                         key="coach_analyze"):
+                try:
+                    current_board = board_payload(USER_ID)
+                    suggestions = coach_with_gemini(current_board, metric, template, USER_ID)
+                    st.session_state["coach_suggestions"] = suggestions
+                    st.success("已取得模型建議；沒有自動修改任何排程")
+                except (CoachError, DataError, ValueError) as exc:
+                    st.error(str(exc))
+            coach_result = st.session_state.get("coach_suggestions")
+            if coach_result:
+                st.write(coach_result["summary"])
+                if coach_result.get("rejected"):
+                    st.warning(f"已由本地規則拒絕 {len(coach_result['rejected'])} 項無效或衝突建議")
+                if not coach_result["actions"]:
+                    st.info("暫無可用的 AI 排程建議")
+                for suggestion in coach_result["actions"]:
+                    with st.container(border=True):
+                        st.write(f"**{suggestion['title']}**｜{suggestion['date']} "
+                                 f"{suggestion['period']} 節起｜{suggestion['blocks']} 節")
+                        st.caption(suggestion["reason"])
+                        if st.button("確認並排入這項 AI 建議",
+                                     key=f"coach_accept_{suggestion['task_id']}_{suggestion['date']}"):
+                            try:
+                                place_manual(USER_ID, suggestion["task_id"], suggestion["date"],
+                                             suggestion["period"], suggestion["blocks"])
+                                st.session_state["coach_suggestions"] = None
+                                st.rerun()
+                            except (DataError, KeyError, ValueError) as exc:
+                                st.error(f"無法接受 AI 建議：{exc}")
     st.subheader("可搜尋筆記庫")
     library_courses = own(records["events"])
     library_notes = own(records["feedback"])
