@@ -67,9 +67,34 @@ def main():
                     expect(page.get_by_text("引導式操作｜從課表到 AI 建議")).to_be_visible()
                     page.get_by_role("tab", name="行事曆與拖排").click()
 
-                    # Demo data must start with two pending items, NOT pre-filled.
+                    # Demo starts as a populated timetable, with both pre-planned and still draggable work.
                     page.get_by_text("展示模式（使用獨立的範例資料）", exact=False).click()
-                    expect(page.locator(".cards .card")).to_have_count(2, timeout=25000)
+                    expect(page.locator(".cards .card")).to_have_count(8, timeout=25000)
+                    expect(page.locator(".event.study")).to_have_count(3, timeout=25000)
+                    expect(page.locator(".event.course")).to_have_count(14, timeout=25000)
+                    expect(page.locator(".event.external")).to_have_count(3, timeout=25000)
+
+                    # LINE chat bubbles + guided quick replies must be fully actionable.
+                    page.get_by_role("tab", name="LINE 一日 Mock").click()
+                    expect(page.get_by_text("LINE 一日 Mock｜一整天的提醒、互動與回饋")).to_be_visible()
+                    expect(page.get_by_role("heading", name="LINE 虛擬對話｜按鈕引導式補筆記")).to_be_visible()
+                    page.get_by_role("button", name="補筆記", exact=True).click()
+                    page.get_by_role("button", name="星期一", exact=True).click()
+                    page.get_by_role("button", name="09:00–11:00｜固態物理").click()
+                    page.get_by_role("button", name="3", exact=True).click()
+                    page.get_by_label("輸入要傳送的課堂筆記或疑問").fill(
+                        "今天學到能帶圖，但還不熟悉費米能階與溫度的關係。")
+                    page.get_by_role("button", name="傳送筆記").click()
+                    expect(page.get_by_text("【Mock AI，並未呼叫模型】", exact=False)).to_be_visible()
+                    page.get_by_role("button", name="只保留筆記").click()
+                    expect(page.get_by_text("保留筆記，不建立新任務", exact=False)).to_be_visible()
+                    page.get_by_role("button", name="重設 LINE 虛擬對話").click()
+                    expect(page.get_by_role("button", name="補筆記", exact=True)).to_be_visible()
+                    expect(page.get_by_text("本日提醒事件時間軸（可選）")).to_be_visible()
+
+                    page.get_by_role("tab", name="行事曆與拖排").click()
+                    expect(page.locator(".cards .card")).to_have_count(8, timeout=25000)
+                    print("瀏覽器已通過：LINE 六步引導、Mock 筆記與重設", flush=True)
 
                     # Resize a pending card by dragging its right-hand handle.
                     grip = page.locator(".cards .card").first.locator(".grip")
@@ -83,24 +108,48 @@ def main():
                     page.mouse.up()
                     expect(page.locator(".cards .card").first).to_contain_text(
                         "2 節", timeout=25000)
+                    # Resizing commits to JSON and re-mounts the two-way component.
+                    # Give Streamlit time to complete the remount before starting a
+                    # new physical drag; otherwise the drag begins on a stale node.
+                    page.wait_for_timeout(1000)
 
-                    # Drag exactly ONE task to tomorrow 08:00; the other stays pending.
-                    page.locator(".cards .card").first.drag_to(page.locator(".matrix .cell").nth(1))
-                    expect(page.locator(".cards .card")).to_have_count(1, timeout=25000)
-                    expect(page.locator(".event.study")).to_have_count(1)
+                    # Select a visible top-row empty destination. Earlier the
+                    # T+4 20:00 cell was outside the viewport, so dragging the
+                    # pointer moved the Streamlit wrapper rather than the task.
+                    # T+1 Saturday 08:00 is a valid unoccupied two-hour slot.
+                    page.evaluate("""() => {
+                      window.__cpDragTrace = [];
+                      for (const type of ["dragstart","dragenter","dragover","drop","dragend"]) {
+                        document.addEventListener(type, (event) => {
+                          const name = event.target && event.target.className;
+                          window.__cpDragTrace.push(type + ":" + String(name));
+                        }, true);
+                      }
+                    }""")
+                    # HTML5 DnD needs a real pointer journey to fire dragover/
+                    # drop reliably in Chrome (the direct drag_to shortcut can miss
+                    # nested CSS-grid destinations after a Streamlit remount).
+                    source = page.locator(".cards .card").first.bounding_box()
+                    target = page.locator(".matrix .cell").nth(1).bounding_box()
+                    assert source is not None and target is not None
+                    sx, sy = source["x"] + 17, source["y"] + source["height"] / 2
+                    tx, ty = target["x"] + target["width"] / 2, target["y"] + target["height"] / 2
+                    page.mouse.move(sx, sy)
+                    page.mouse.down()
+                    page.mouse.move(sx + 15, sy + 8, steps=4)
+                    page.mouse.move(tx, ty, steps=18)
+                    page.mouse.up()
+                    page.wait_for_timeout(900)
+                    print("HTML5 drag trace:", page.evaluate("window.__cpDragTrace"), flush=True)
+                    problems = page.get_by_text("規劃操作未儲存：", exact=False).all_text_contents()
+                    assert not problems, "排程操作被後端拒絕：" + " ; ".join(problems)
+                    expect(page.locator(".cards .card")).to_have_count(7, timeout=25000)
+                    expect(page.locator(".event.study")).to_have_count(4)
 
-                    # Only the explicit button may schedule the other task.
+                    # Explicit fill allocates the other tasks; it does not move the four existing plans.
                     page.get_by_role("button", name="一鍵填滿剩餘任務").click()
                     expect(page.locator(".cards .card")).to_have_count(0, timeout=25000)
-                    expect(page.locator(".event.study")).to_have_count(2)
-
-                    # LINE Mock must be independently visible, with a daily timeline
-                    # and an interactive note form, without any real LINE token.
-                    page.get_by_role("tab", name="LINE 一日 Mock").click()
-                    expect(page.get_by_text("LINE 一日 Mock｜一整天的提醒、互動與回饋")).to_be_visible()
-                    expect(page.get_by_text("選擇模擬日期")).to_be_visible()
-                    expect(page.get_by_text("模擬 LINE 課後提醒與補筆記")).to_be_visible()
-                    expect(page.get_by_role("button", name="模擬回覆並存入展示資料")).to_be_visible()
+                    expect(page.locator(".event.study")).to_have_count(11)
 
                     assert not errors, "JavaScript errors: " + "; ".join(errors)
                     print("通過：日週月檢視、五步引導、LINE 一日 Mock、七日拖排與一鍵填滿")
