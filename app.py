@@ -14,7 +14,7 @@ from calendar_views import overview_events, view_options
 from mock_day import one_day_timeline, recommended_demo_day
 from line_mock_chat import start_chat, choices as mock_chat_choices, advance_chat, step_number
 from note_attachments import attachment_path
-from note_tasks import candidate_tasks, confirm_question_task
+from note_tasks import candidate_tasks, confirm_question_task, assign_note_course
 from exporter import export_learning_markdown
 from storage import (
     DataError, TZ, add_availabilities, add_event, add_task_to_storage,
@@ -1100,50 +1100,74 @@ with pages[4]:
                         except (DataError, KeyError, ValueError) as exc:
                             st.error(f"無法接受 AI 建議：{exc}")
     st.subheader("可搜尋筆記庫")
-    library_courses = own(records["events"])
-    library_notes = own(records["feedback"])
-    course_titles = {event["event_id"]: event["title"] for event in library_courses}
-    course_options = [""] + list(course_titles)
-    note_dates = [""] + sorted(
-        {note.get("class_date", "") for note in library_notes if note.get("class_date")},
-        reverse=True,
+    st.caption("先選課程、再選第幾週，進入該週筆記。主題標籤可繼續搜尋。")
+    library_courses=own(records["events"])
+    library_notes=own(records["feedback"])
+    course_titles={event["event_id"]:event["title"] for event in library_courses}
+    course_names=["所有課程"]+sorted(set(course_titles.values()))+["未分類筆記"]
+    selected_course=st.pills(
+        "選擇課程",course_names,selection_mode="single",
+        default="所有課程",key="note_library_course_pills",
+    ) or "所有課程"
+    initial_semester=next(
+        (row.get("start") for row in records["semester_settings"]
+         if row.get("user_id")==USER_ID),""
     )
-    filter_columns = st.columns(3)
-    with filter_columns[0]:
-        selected_note_course = st.selectbox(
-            "依課程篩選",
-            course_options,
-            format_func=lambda event_id: (
-                "所有課程" if not event_id else course_titles[event_id]
-            ),
-            key="note_library_course",
-        )
-    with filter_columns[1]:
-        selected_note_date = st.selectbox(
-            "依課次日期篩選",
-            note_dates,
-            format_func=lambda value: value or "所有日期",
-            key="note_library_date",
-        )
-    with filter_columns[2]:
-        selected_note_topic = st.text_input(
-            "依主題標籤搜尋",
-            placeholder="例如：函式",
-            key="note_library_topic",
-        )
-    notes = search_learning_notes(
-        records["feedback"],
-        USER_ID,
-        event_id=selected_note_course,
-        class_date=selected_note_date,
-        topic=selected_note_topic,
+    today_semester=datetime.now(TZ).date()
+    semester_default=(date(today_semester.year,9,1)
+                      if today_semester.month>=8 else date(today_semester.year,2,1))
+    semester_anchor=date.fromisoformat(initial_semester) if initial_semester else semester_default
+
+    def week_of(note: dict) -> str:
+        try:
+            days=(date.fromisoformat(note.get("class_date",""))-semester_anchor).days
+        except ValueError:
+            return "日期未設定"
+        return "學期前" if days<0 else f"第 {days//7+1} 週"
+
+    matched_courses=[
+        note for note in library_notes
+        if selected_course=="所有課程"
+        or (selected_course=="未分類筆記"
+            and note.get("event_id") not in course_titles)
+        or course_titles.get(note.get("event_id"))==selected_course
+    ]
+    weeks=["全部週次"]+sorted(
+        {week_of(note) for note in matched_courses},
+        key=lambda key:(key=="學期前",
+                        -int(key.replace("第 ","").replace(" 週",""))
+                        if key.startswith("第 ") else 0),
     )
+    selected_week=st.pills(
+        "選擇週次",weeks,selection_mode="single",
+        default="全部週次",key="note_library_week_pills",
+    ) or "全部週次"
+    selected_note_topic=st.text_input(
+        "搜尋主題標籤",placeholder="例如：回授、Miller、Routh",
+        key="note_library_topic",
+    )
+    tag_matches=search_learning_notes(records["feedback"],USER_ID,
+                                       topic=selected_note_topic)
+    ids={note["feedback_id"] for note in matched_courses
+         if selected_week=="全部週次" or week_of(note)==selected_week}
+    notes=[note for note in tag_matches if note.get("feedback_id") in ids]
     if notes:
         for row in notes:
             with st.expander(
                 f"{row.get('class_date')}｜{course_titles.get(row.get('event_id'), '未分類筆記')}"
             ):
                 st.write(row.get("content", ""))
+                if row.get("event_id") not in course_titles and library_courses:
+                    st.caption("此 LINE 筆記尚未指定來源課程；指定後才能產生下次上課前的 AI 任務。")
+                    selected_source=st.selectbox(
+                        "指定來源課程",list(course_titles),
+                        format_func=lambda event_id:course_titles[event_id],
+                        key="classify_note_"+row["feedback_id"],
+                    )
+                    if st.button("儲存這份筆記的課程歸屬",
+                                 key="classify_confirm_"+row["feedback_id"]):
+                        safely(lambda:assign_note_course(USER_ID,row["feedback_id"],selected_source),
+                               "已指定來源課程；相關疑問任務將重新顯示")
                 filename = row.get("attachment_filename","")
                 if filename:
                     st.caption("LINE 附件：" + filename)
