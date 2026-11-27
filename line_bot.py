@@ -13,8 +13,6 @@ import requests
 from flask import Flask, abort, request
 
 from ai_assistant import AIError, organize_class_feedback
-from plan_bridge import merge_user_plan, normalize_plan_result
-from scheduler import make_plan
 from storage import (
     DataError,
     add_task_to_storage,
@@ -374,36 +372,25 @@ def _visual_board_enabled(user_id: str, availability: list[dict]) -> bool:
 
 def _replan_user_tasks(user_id: str, now: datetime,
                        changed_task_id: str = "") -> list[dict]:
-    tasks = load_json(data_path("tasks"))
-    availability = load_json(data_path("availability"))
-    previous_plan = load_json(data_path("plan"))
-    own_tasks = [row for row in tasks if row.get("user_id") == user_id]
-    own_slots = [row for row in availability if row.get("user_id") == user_id]
-    own_plan = [row for row in previous_plan if row.get("user_id") == user_id]
-    if _visual_board_enabled(user_id, availability):
-        # 使用者在 LINE 明確回報「剩餘分鐘」才安排該一項任務。
-        # 既有的其他手排與自動排程全部保持原位。
-        if not changed_task_id:
-            return own_plan
-        from week_planner import unplace, fill_remaining
-        unplace(user_id, changed_task_id)
-        changed = next(
-            (t for t in load_json(data_path("tasks"))
-             if t.get("user_id") == user_id and t.get("task_id") == changed_task_id),
-            None,
-        )
-        if changed and changed.get("status") == "pending":
-            result = fill_remaining(user_id, now, only_task_ids={changed_task_id})
-            return result["placed"]
-        return []
-    # 相容原先單純可用時段的 Legacy 排程與其測試。
-    plan_result = make_plan(own_tasks, own_slots, own_plan, now)
-    new_plan = normalize_plan_result(plan_result, user_id)
-    update_json(
-        data_path("plan"),
-        lambda rows: merge_user_plan(rows, user_id, new_plan),
+    """V2-only：LINE 回報時只調整被回報的任務。
+
+    不使用 legacy make_plan 全表重排；無論有沒有 board_generated
+    既有時段，都不得把其他任務移動。
+    """
+    if not changed_task_id:
+        return [row for row in load_json(data_path("plan"))
+                if row.get("user_id") == user_id]
+    from week_planner import unplace, fill_remaining
+    unplace(user_id, changed_task_id)
+    task = next(
+        (row for row in load_json(data_path("tasks"))
+         if row.get("user_id") == user_id and row.get("task_id") == changed_task_id),
+        None,
     )
-    return new_plan
+    if task and task.get("status") == "pending":
+        outcome = fill_remaining(user_id, now, only_task_ids={changed_task_id})
+        return outcome["placed"]
+    return []
 
 
 def _handle_study_checkin(event: dict, user: dict) -> bool | None:
@@ -592,25 +579,9 @@ def _schedule_confirmed_ai_task(
         add_task_to_storage(task)
         tasks = load_json(data_path("tasks"))
 
-    slots = load_json(data_path("availability"))
-    previous_plan = load_json(data_path("plan"))
-    own_tasks = [row for row in tasks if row.get("user_id") == user_id]
-    own_slots = [row for row in slots if row.get("user_id") == user_id]
-    own_plan = [row for row in previous_plan if row.get("user_id") == user_id]
-    if _visual_board_enabled(user_id, slots):
-        # LINE AI 核准只新增待排任務，不在未按自動填滿前變動其他課表。
-        return task, {}
-    plan_result = make_plan(own_tasks, own_slots, own_plan, now)
-    new_plan = normalize_plan_result(plan_result, user_id)
-    update_json(
-        data_path("plan"),
-        lambda rows: merge_user_plan(rows, user_id, new_plan),
-    )
-    task_plan = next(
-        (row for row in new_plan if row.get("task_id") == task["task_id"]),
-        {},
-    )
-    return task, task_plan
+    # LINE 接受 AI 建議只建立待排任務；V2 的拖排／偏好畫筆
+    # 必須由使用者在 Streamlit 中控台明確確認。
+    return task, {}
 
 
 def _format_class_feedback_analysis(analysis: dict, progress: int) -> str:
