@@ -27,6 +27,7 @@ from week_planner import (
     set_task_blocks, unplace,
 )
 from week_board import render_week_board
+from schedule_preferences import mark_preferences, clear_preferences
 from calendar_sync import preview_ics, import_ics, export_week_ics, edit_imported_event, conflicts_with_existing_plan
 from study_metrics import personal_metrics, BENCHMARK_TEMPLATES, anonymized_benchmark
 from study_coach import CoachError, coach_with_gemini, mock_coach_for_demo
@@ -122,8 +123,10 @@ with pages[0]:
     )
     if calendar_view == "七日拖排":
         st.subheader("七日規劃板")
-        st.caption("左側待排卡片可拖到任意空白節次；拉動右側把手修改工時。一鍵填滿才會自動排其他任務。")
-        action = render_week_board(board_payload(USER_ID, board_now))
+        st.caption("左側卡片可自由拖排；按一鍵安排先進入綠色偏好畫筆，再確認排入。綠色優先而非只能排綠色；已手動固定的任務不會移動。")
+        payload = board_payload(USER_ID, board_now)
+        payload["preference_mode"] = st.session_state.get("classpulse_preference_mode", False)
+        action = render_week_board(payload)
         if action:
             nonce = action.get("nonce")
             if nonce and st.session_state.get("last_board_nonce") != nonce:
@@ -139,11 +142,30 @@ with pages[0]:
                     elif action.get("type") == "unplace":
                         unplace(USER_ID, action["task_id"])
                         st.rerun()
+                    elif action.get("type") == "pref_begin":
+                        st.session_state["classpulse_preference_mode"] = True
+                        st.rerun()
+                    elif action.get("type") == "pref_cancel":
+                        st.session_state["classpulse_preference_mode"] = False
+                        st.rerun()
+                    elif action.get("type") == "pref_clear":
+                        clear_preferences(USER_ID)
+                        st.rerun()
+                    elif action.get("type") == "pref_paint":
+                        mark_preferences(
+                            USER_ID, action.get("cells", []),
+                            action.get("enabled"), board_now,
+                        )
+                        st.rerun()
                     elif action.get("type") == "fill":
                         outcome = fill_remaining(USER_ID, board_now)
+                        hits = sum(int(x.get("preference_hits") or 0) for x in outcome["placed"])
+                        st.session_state["classpulse_preference_mode"] = False
                         st.session_state["week_fill_result"] = (
                             f"本次新增 {len(outcome['placed'])} 項安排、"
-                            f"仍有 {len(outcome['skipped'])} 項無法排入。"
+                            f"{len(outcome['skipped'])} 項無法排入；"
+                            f"新安排命中 {hits} 個偏好節次。"
+                            "綠色不足時會使用其他合法空檔。"
                         )
                         st.rerun()
                     elif action.get("type") == "external_edit":
