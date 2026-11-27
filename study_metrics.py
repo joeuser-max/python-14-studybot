@@ -52,4 +52,7 @@ def anonymized_benchmark(metrics: dict, template: dict) -> dict:
         "style_goal": template.get("goal", ""),
         "user_completion_rate": metrics.get("completion"),
         "user_checkin_rate": metrics.get("checkin_rate"),
+        "peer_claimed_completion_rate": template.get("claimed_completion_rate"),
+        "peer_claimed_checkin_rate": template.get("claimed_checkin_rate"),
+        "reference_verified": bool(template.get("benchmark_verified", False)),
     }
