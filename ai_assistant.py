@@ -280,6 +280,7 @@ def generate_question_actions(candidates: list[dict],
             "source_question_key": x["source_question_key"],
             "question": x["question"],
             "subject": x.get("subject","")[:100],
+            "note_context": str(x.get("note_excerpt") or "")[:1200],
         } for x in batch]
         parsed = _request_structured_output({
             "model": model,
