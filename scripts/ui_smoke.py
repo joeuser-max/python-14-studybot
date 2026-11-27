@@ -67,9 +67,12 @@ def main():
                     expect(page.get_by_text("引導式操作｜從課表到 AI 建議")).to_be_visible()
                     page.get_by_role("tab", name="行事曆與拖排").click()
 
-                    # Demo data must start with two pending items, NOT pre-filled.
+                    # Demo starts as a populated timetable, with both pre-planned and still draggable work.
                     page.get_by_text("展示模式（使用獨立的範例資料）", exact=False).click()
-                    expect(page.locator(".cards .card")).to_have_count(2, timeout=25000)
+                    expect(page.locator(".cards .card")).to_have_count(8, timeout=25000)
+                    expect(page.locator(".event.study")).to_have_count(3, timeout=25000)
+                    expect(page.locator(".event.course")).to_have_count(14, timeout=25000)
+                    expect(page.locator(".event.external")).to_have_count(3, timeout=25000)
 
                     # Resize a pending card by dragging its right-hand handle.
                     grip = page.locator(".cards .card").first.locator(".grip")
@@ -84,15 +87,16 @@ def main():
                     expect(page.locator(".cards .card").first).to_contain_text(
                         "2 節", timeout=25000)
 
-                    # Drag exactly ONE task to tomorrow 08:00; the other stays pending.
-                    page.locator(".cards .card").first.drag_to(page.locator(".matrix .cell").nth(1))
-                    expect(page.locator(".cards .card")).to_have_count(1, timeout=25000)
-                    expect(page.locator(".event.study")).to_have_count(1)
+                    # Drag one task to tomorrow 22:00, after any classes and planned sessions.
+                    # Row E (22:00) = 15th row, second day = index 14*7+1.
+                    page.locator(".cards .card").first.drag_to(page.locator(".matrix .cell").nth(99))
+                    expect(page.locator(".cards .card")).to_have_count(7, timeout=25000)
+                    expect(page.locator(".event.study")).to_have_count(4)
 
-                    # Only the explicit button may schedule the other task.
+                    # Explicit fill allocates the other tasks; it does not move the four existing plans.
                     page.get_by_role("button", name="一鍵填滿剩餘任務").click()
                     expect(page.locator(".cards .card")).to_have_count(0, timeout=25000)
-                    expect(page.locator(".event.study")).to_have_count(2)
+                    expect(page.locator(".event.study")).to_have_count(11)
 
                     # LINE Mock must be independently visible, with a daily timeline
                     # and an interactive note form, without any real LINE token.
