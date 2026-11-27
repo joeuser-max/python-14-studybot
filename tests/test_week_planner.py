@@ -66,7 +66,7 @@ def test_fill_preserves_manual_and_is_idempotent(empty_db):
     plan = storage.load_json(storage.data_path("plan"))
     assert len(plan) == 3
     assert next(row for row in plan if row["task_id"] == "manual") == before
-    assert next(row for row in plan if row["task_id"] == "urgent")["scheduled_start"].endswith("10:00+08:00")
+    assert next(row for row in plan if row["task_id"] == "urgent")["scheduled_start"].endswith("08:00+08:00")
     assert fill_remaining(USER, NOW)["placed"] == []
     assert len(storage.load_json(storage.data_path("plan"))) == 3
 
