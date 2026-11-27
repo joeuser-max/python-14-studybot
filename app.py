@@ -594,7 +594,7 @@ with pages[2]:
             chat_rows = []
             for message in chat_state["messages"]:
                 side = "student" if message["role"] == "user" else "bot"
-                safe_text = escape_html(message["text"]).replace("\\n", "<br>")
+                safe_text = escape_html(message["text"]).replace("\n", "<br>")
                 chat_rows.append(
                     f'<div class="chat-row {side}"><div class="chat-bubble">'
                     f'{safe_text}</div></div>'
