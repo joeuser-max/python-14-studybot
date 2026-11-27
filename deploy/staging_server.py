@@ -3,7 +3,6 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
-import pwd
 import re
 import signal
 import subprocess
@@ -64,6 +63,9 @@ def wait_ready(url, children, timeout=60):
 
 
 def run():
+    if sys.platform != "linux":
+        raise RuntimeError("Railway staging launcher requires a Linux container")
+    import pwd
     subjects = configure(os.environ)
     # Runtime-only mount, not the image layer. Linux mountinfo handles bind mounts.
     if not any(line.split()[4] == "/data" for line in Path("/proc/self/mountinfo").read_text().splitlines()):
