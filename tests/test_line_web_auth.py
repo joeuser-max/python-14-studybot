@@ -201,3 +201,20 @@ def test_staging_allowlist_revokes_access_for_removed_account(setup, monkeypatch
         auth.resolve_session(raw)
     with pytest.raises(auth.AuthError):
         auth.create_session(A, NOW + 100)
+
+
+def test_internal_direct_entry_reuses_valid_session(setup, monkeypatch):
+    app, ids = setup
+    monkeypatch.setenv("CLASSPULSE_FRIEND_INTERNAL", "1")
+    monkeypatch.delenv("CLASSPULSE_STAGING_TEST_USERS", raising=False)
+    client = app.test_client()
+    params = start(client)
+    mock_line(monkeypatch, params)
+    assert callback(client, params["state"]).status_code == 302
+    raw = session_cookie(client)
+    response = client.get("/auth/line/start?openExternalBrowser=1", base_url=ORIGIN)
+    assert response.status_code == 302 and response.location == "/"
+    assert session_cookie(client) == raw
+    assert auth.resolve_session(raw) == ids[A]
+    auth.revoke_session(raw)
+    assert start(client)["state"]
