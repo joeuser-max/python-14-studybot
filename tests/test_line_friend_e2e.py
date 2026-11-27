@@ -99,3 +99,26 @@ def test_isolation_guard_rejects_other_directory(setup, tmp_path, monkeypatch):
     monkeypatch.setattr(storage, "DATA_DIR", tmp_path / "data")
     with pytest.raises(ValueError):
         e2e.create_app()
+
+
+def test_internal_demo_two_seats_and_direct_link(setup, monkeypatch):
+    monkeypatch.setenv("CLASSPULSE_FRIEND_INTERNAL", "1")
+    monkeypatch.delenv("CLASSPULSE_STAGING_TEST_USERS")
+    _, replies = setup
+    client = e2e.create_app().test_client()
+    third = "U" + "c" * 32
+    assert post(client, [event(), event("second", OTHER), event("third", third)]).status_code == 200
+    assert {u["line_user_id"] for u in read("users")} == {SUBJECT, OTHER}
+    assert len(read("events")) == 28
+    assert all(ORIGIN + "/auth/line/start?openExternalBrowser=1" in r for r in replies[:2])
+    assert "名額已滿" in replies[2]
+    assert post(client, [event("again")]).status_code == 200
+    assert len(read("users")) == 2
+    assert len(read("events")) == 28
+    assert ORIGIN in replies[-1]
+
+
+def test_internal_mode_rejects_conflicting_allowlist(setup, monkeypatch):
+    monkeypatch.setenv("CLASSPULSE_FRIEND_INTERNAL", "1")
+    with pytest.raises(ValueError):
+        e2e.create_app()
