@@ -67,3 +67,16 @@ def test_ai_cannot_insert_nonexistent_task_or_past_day(data):
         ],
     }, data, USER, NOW)
     assert len(r["actions"]) == 0 and len(r["rejected"]) == 2
+
+
+def test_demo_mock_coach_returns_valid_candidate_without_network(monkeypatch, data):
+    monkeypatch.setattr(study_coach, "_request_gemini",
+                        lambda *args: pytest.fail("Mock 絕不可打到外部 API"))
+    result = study_coach.mock_coach_for_demo(
+        data, {"preferred_periods": ["A", "B"], "maximum_blocks": 2},
+        USER, now=NOW,
+    )
+    assert result["summary"].startswith("【Mock")
+    assert len(result["actions"]) == 1
+    assert result["actions"][0]["task_id"] == "t1"
+    assert result["rejected"] == []
