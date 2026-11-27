@@ -57,7 +57,7 @@ def main():
                     # selected mode without querying across iframe boundaries.
                     for label in ("週", "月", "日"):
                         page.get_by_text(label, exact=True).first.click()
-                        expect(page.get_by_text(label + "行事曆")).to_be_visible(timeout=25000)
+                        expect(page.get_by_role("heading", name=label + "行事曆", exact=True)).to_be_visible(timeout=25000)
                         expect(page.locator("iframe")).not_to_have_count(0, timeout=25000)
                     page.get_by_text("七日拖排", exact=True).first.click()
                     expect(page.locator(".matrix .cell")).to_have_count(112, timeout=25000)
