@@ -31,6 +31,7 @@ FILES = {
     "external_events": "external_events.json",
     "preference_targets": "preference_targets.json",
     "semester_settings": "semester_settings.json",
+    "web_auth": "web_auth.json",
 }
 TZ = ZoneInfo("Asia/Taipei")
 
