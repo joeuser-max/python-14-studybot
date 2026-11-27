@@ -87,10 +87,10 @@ def main():
                     expect(page.locator(".cards .card").first).to_contain_text(
                         "2 節", timeout=25000)
 
-                    # Drag one resized (2-hour) task to the last day at 20:00.
-                    # Row C (20:00) = row index 12; day T+6 = column index 6.
-                    # End 22:00 is safely within the same day, avoiding midnight-edge behavior.
-                    page.locator(".cards .card").first.drag_to(page.locator(".matrix .cell").nth(90))
+                    # Drag resized task to T+4 at 20:00: safely before its T+5
+                    # deadline and clear of classes and the initial study plan.
+                    # Row C (20:00) = row index 12; day T+4 = column index 4.
+                    page.locator(".cards .card").first.drag_to(page.locator(".matrix .cell").nth(88))
                     page.wait_for_timeout(900)
                     problems = page.get_by_text("規劃操作未儲存：", exact=False).all_text_contents()
                     assert not problems, "排程操作被後端拒絕：" + " ; ".join(problems)
