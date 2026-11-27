@@ -454,3 +454,41 @@ def test_signed_class_push_note_preserves_course_and_ai_choice(setup, monkeypatc
         assert not note.get("ai_analysis")
         assert len(storage.load_json(storage.data_path("tasks"))) == before
     assert not forwarded
+
+
+def test_signed_auto_reminder_opt_in_and_off_owner_only(setup, monkeypatch):
+    import line_bot
+    monkeypatch.setenv("CLASSPULSE_FRIEND_NOTE_SYNC", "1")
+    monkeypatch.setenv("CLASSPULSE_FRIEND_AUTO_PUSH", "1")
+    client, replies, forwarded = setup
+    monkeypatch.setattr(line_bot, "reply_line_message",
+                        lambda token, text, choices=None: replies.append(text))
+    def msg(eid, text):
+        return event(eid, message={"type": "text", "text": text})
+    assert post(client, [msg("auto-open", "開啟網頁")]).status_code == 200
+    assert not users()[0]["reminders_enabled"] and not users()[0]["study_reminders_enabled"]
+    stranger = {"user_id":"unrelated", "line_user_id":"U"+"b"*32,
+                "reminders_enabled":False, "study_reminders_enabled":False}
+    storage.update_json(storage.data_path("users"), lambda rows: rows+[stranger])
+    assert post(client, [msg("auto-on", "開啟提醒")]).status_code == 200
+    assert users()[0]["reminders_enabled"] and users()[0]["study_reminders_enabled"]
+    assert users()[0]["ai_after_class_enabled"] is False
+    assert users()[1] == stranger
+    assert post(client, [msg("auto-status", "提醒狀態")]).status_code == 200
+    assert "課後提醒：開啟" in replies[-1]
+    assert post(client, [msg("auto-off", "關閉提醒")]).status_code == 200
+    assert not users()[0]["reminders_enabled"] and not users()[0]["study_reminders_enabled"]
+    assert users()[1] == stranger and not forwarded
+
+
+def test_auto_class_worker_only_sends_for_opted_in_owner(setup, monkeypatch):
+    import line_personal_auto_worker as auto
+    client, replies, forwarded, msg, worker, now, uid, course, selected, pushes = _prepare_class_push(setup, monkeypatch)
+    for key in ("CLASSPULSE_FRIEND_AUTO_PUSH", "CLASSPULSE_FRIEND_STUDY_PUSH", "CLASSPULSE_FRIEND_PROGRESS_SYNC"):
+        monkeypatch.setenv(key, "1")
+    assert auto.tick(now) == [] and not pushes
+    assert post(client, [msg("auto-on", "開啟提醒")]).status_code == 200
+    assert auto.tick(now) == [("class", "sent")]
+    assert auto.tick(now) == [] and len(pushes) == 1
+    assert post(client, [msg("auto-off", "關閉提醒")]).status_code == 200
+    assert not users()[0]["reminders_enabled"]
