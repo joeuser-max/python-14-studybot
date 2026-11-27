@@ -9,7 +9,7 @@ import hmac
 import json
 import os
 import re
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from filelock import FileLock
 
@@ -18,6 +18,7 @@ from flask import Flask, abort, request
 
 import storage
 import line_bot
+from ai_assistant import ai_is_configured
 from line_web_auth import AuthError, _owner
 from line_bot import verify_line_signature
 from line_friend_e2e import create_app as create_demo
@@ -47,8 +48,8 @@ def is_demo_event(event):
 def handle_personal_note(event):
     """Called only after original OA signature validation and with isolated storage.
 
-    Return True if this event belongs to the new note flow. Do not enable paid
-    AI or worker sends in this phase. Existing non-enrolled users stay legacy.
+    Return True if this event belongs to the personal note flow. Paid AI needs
+    an explicit per-note consent and an operator opt-in. No worker sends.
     """
     source = event.get("source", {})
     subject = source.get("userId")
@@ -82,15 +83,52 @@ def handle_personal_note(event):
         if user is None:
             return False
         pending = line_bot._pending_for(uid, now)
-        command = (text in ("補筆記", "查看筆記", "我的筆記")
+        command = (text in ("補筆記", "查看筆記", "我的筆記", "AI補筆記", "同意AI整理")
                    or text.startswith(("筆記 ", "搜尋 ")))
         # Keep legacy binding and explicit progress commands on the existing path.
         if text.startswith("綁定 ") or text == "完成" or text == "未完成" or text.startswith(("完成 ", "未完成 ")):
             return False
         if not (kind == "file" or command or pending):
             return False
-        # This narrow opt-in enables note intake, not external AI or reminder consent.
-        user = dict(user, ai_after_class_enabled=False)
+        ai_ready = (os.getenv("CLASSPULSE_FRIEND_AI_SYNC") == "1" and ai_is_configured())
+        token = event.get("replyToken", "")
+        if kind == "text" and text == "AI補筆記":
+            if ai_ready:
+                line_bot._set_pending({
+                    "user_id": uid, "stage": "friend_ai_consent",
+                    "expires_at": (now + timedelta(minutes=10)).isoformat(timespec="seconds"),
+                })
+                line_bot.reply_line_message(token,
+                    "本次課名、筆記文字及自評進度將傳送至 OpenAI API 整理，可能產生費用。"
+                    "不會傳送 LINE ID 或整份 PDF 原檔。只使用虛構測試筆記。"
+                    "同意請回覆「同意AI整理」，不同意請回覆「取消」。",
+                    ["同意AI整理", "取消"])
+            else:
+                line_bot.reply_line_message(token, "真實 AI 尚未啟用，仍可使用「補筆記」。")
+            line_bot._mark_processed(eid, now)
+            return True
+        if kind == "text" and text == "同意AI整理":
+            if ai_ready and pending and pending.get("stage") == "friend_ai_consent":
+                line_bot._set_pending({
+                    "user_id": uid, "stage": "weekday", "friend_ai_consent": True,
+                    "expires_at": (now + timedelta(minutes=10)).isoformat(timespec="seconds"),
+                })
+                line_bot.reply_line_message(token, "本次 AI 筆記已同意。請選擇星期。",
+                                            line_bot.WEEKDAY_CHOICES)
+            else:
+                line_bot.reply_line_message(token, "請先輸入「AI補筆記」並閱讀同意說明。")
+            line_bot._mark_processed(eid, now)
+            return True
+        if pending and pending.get("stage") == "friend_ai_consent" and text not in ("取消", "補筆記"):
+            line_bot.reply_line_message(token, "請先回覆「同意AI整理」或「取消」。")
+            line_bot._mark_processed(eid, now)
+            return True
+        # Consent applies to this guided note only. No permanent setting change,
+        # no worker consent, no API request for ordinary/quick notes.
+        user = dict(user, ai_after_class_enabled=bool(
+            ai_ready and pending and pending.get("friend_ai_consent") is True
+            and pending.get("stage") == "note"
+        ), _personal_question_only=True)
         if kind == "file":
             ok = line_bot._handle_file_event(event, user, now)
         else:
