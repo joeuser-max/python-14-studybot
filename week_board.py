@@ -263,6 +263,12 @@ export default function(component) {
         e.dataTransfer.effectAllowed="move";};
     }
     if(kind==="external"){el.title="點擊編輯，變更前會再次確認";el.onclick=()=>send({type:"external_edit",id:meta.id});}
+    if(kind==="study"||kind==="external"){
+      el.ondragover=(e)=>{e.preventDefault();e.dataTransfer.dropEffect="none";};
+      el.ondrop=(e)=>{e.preventDefault();e.stopPropagation();
+        showError("此時間已被「"+text+"」占用，不能直接覆蓋；原有任務與行程保持不變。");
+      };
+    }
     pos(el,idx+2,Math.round((from-8)*2)+2,Math.round((to-from)*2));
   };
   (data.courses||[]).forEach(c=>{
