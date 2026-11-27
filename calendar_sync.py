@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import hashlib
+from collections import Counter
 from datetime import date, datetime, time, timedelta
 
 from icalendar import Calendar, Event
@@ -32,6 +33,7 @@ def preview_ics(contents: bytes, user_id: str, filename: str = "calendar.ics",
         raise DataError("無法解析 ICS，請檢查 iCalendar 檔案格式") from exc
     if len(incoming) > 500:
         raise DataError("這七天的外部事件超過 500 筆，請使用範圍較小的行事曆")
+    uid_counts = Counter(str(item.get('UID') or '').strip() for item in incoming if item.get('UID'))
     events = []
     for item in incoming:
         if item.get("STATUS") and str(item["STATUS"]).upper() == "CANCELLED":
@@ -49,7 +51,16 @@ def preview_ics(contents: bytes, user_id: str, filename: str = "calendar.ics",
             continue
         title = str(item.get("SUMMARY") or "未命名行程").strip()[:140]
         uid = str(item.get("UID") or "").strip()[:200]
-        identity = hashlib.sha256(f"{filename}|{uid}|{start.isoformat()}".encode()).hexdigest()[:24]
+        recurrence_id = str(item.get("RECURRENCE-ID") or "").strip()
+        # A one-off UID should remain stable if the provider moves the event.
+        # Recurring instances need their own identity, otherwise weekly events collapse.
+        if uid:
+            instance = recurrence_id or (start.isoformat() if uid_counts[uid] > 1 else "")
+            identity_key = f"{uid}|{instance}"
+        else:
+            # Without an ICS UID a moved event cannot be reliably matched.
+            identity_key = f"{filename}|{title}|{start.isoformat()}"
+        identity = hashlib.sha256(identity_key.encode()).hexdigest()[:24]
         events.append({
             "id": "ics_" + identity, "user_id": user_id,
             "title": title, "start": start.isoformat(timespec="minutes"),
@@ -81,6 +92,42 @@ def import_ics(events: list[dict], user_id: str, overwrite: bool = False) -> dic
         return rows
     update_json(data_path("external_events"), change)
     return {"saved": len(saved), "skipped": len(skipped)}
+
+
+
+def conflicts_with_existing_plan(events: list[dict], user_id: str) -> list[dict]:
+    """Show possible collisions before importing; never auto-rearrange the user plan."""
+    tasks = {t["task_id"]: t for t in load_json(data_path("tasks"))
+             if t.get("user_id") == user_id and t.get("status") == "pending"}
+    slots = {s["availability_id"]: s for s in load_json(data_path("availability"))}
+    existing = {
+        e["id"]: e for e in load_json(data_path("external_events"))
+        if e.get("user_id") == user_id
+    }
+    plan = [
+        (row, slots[row["availability_id"]]) for row in load_json(data_path("plan"))
+        if row.get("user_id") == user_id and row.get("status") == "scheduled"
+        and row.get("task_id") in tasks
+        and row.get("availability_id") in slots
+    ]
+    conflicts = []
+    for item in events:
+        # When imported data has not changed, it will not introduce a new conflict.
+        previous = existing.get(item["id"])
+        if previous and all(previous.get(field) == item.get(field)
+                            for field in ("title", "start", "end")):
+            continue
+        begin, finish = _datetime(item["start"]), _datetime(item["end"])
+        for row, slot in plan:
+            task_start, task_finish = _slot_interval(slot, row)
+            if begin < task_finish and task_start < finish:
+                task = tasks[row["task_id"]]
+                conflicts.append({
+                    "event_id": item["id"], "event_title": item["title"],
+                    "task_id": row["task_id"], "task_title": task["title"],
+                    "task_start": task_start.isoformat(timespec="minutes"),
+                })
+    return conflicts
 
 
 def edit_imported_event(user_id: str, event_id: str, title: str, start: datetime,
@@ -128,10 +175,15 @@ def export_week_ics(user_id: str, now: datetime | None = None) -> bytes:
         event.add("dtend", end)
         cal.add_component(event)
 
+    window_start = datetime.combine(week[0], time.min, tzinfo=TZ)
+    window_end = datetime.combine(week[-1] + timedelta(days=1), time.min, tzinfo=TZ)
     for e in load_json(data_path("external_events")):
         if e.get("user_id") != user_id:
             continue
-        put(e["id"], e["title"], _datetime(e["start"]), _datetime(e["end"]))
+        begin, finish = _datetime(e["start"]), _datetime(e["end"])
+        if finish <= window_start or begin >= window_end:
+            continue
+        put(e["id"], e["title"], begin, finish)
     for course in load_json(data_path("events")):
         if course.get("user_id") != user_id:
             continue
