@@ -4,6 +4,8 @@
 """
 from __future__ import annotations
 
+import os
+import tempfile
 import subprocess
 import sys
 import time
@@ -29,7 +31,8 @@ def wait_for_server():
 
 
 def main():
-    log_path = Path("/tmp/classpulse-ui-smoke-server.log")
+    output_dir = Path(os.environ.get("RUNNER_TEMP") or tempfile.gettempdir())
+    log_path = output_dir / "classpulse-ui-smoke-server.log"
     with log_path.open("w", encoding="utf-8") as log:
         server = subprocess.Popen(
             [sys.executable, "-m", "streamlit", "run", "app.py",
@@ -209,7 +212,7 @@ def main():
                     assert not errors, "JavaScript errors: " + "; ".join(errors)
                     print("通過：日週月檢視、五步引導、LINE 一日 Mock、七日拖排與一鍵填滿")
                 except Exception:
-                    page.screenshot(path="/tmp/classpulse-ui-smoke-failure.png", full_page=True)
+                    page.screenshot(path=str(output_dir / "classpulse-ui-smoke-failure.png"), full_page=True)
                     raise
                 finally:
                     browser.close()
