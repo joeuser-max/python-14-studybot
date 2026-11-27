@@ -146,3 +146,22 @@ def test_seeded_note_candidate_cannot_be_confirmed_by_other_user():
     with pytest.raises(storage.DataError):
         confirm_question_task(a, candidate, NOW)
     assert read("tasks") == before
+
+
+@pytest.mark.parametrize("legacy", [False, True])
+def test_owned_study_start_and_checkin_remain_functional(legacy):
+    from datetime import timedelta
+    tasks = [task("A", "a"), task("B", "b")]
+    slots = [slot("A", "a-slot"), slot("B", "b-slot")]
+    users = [{"user_id": uid, "line_user_id": f"U_{uid}",
+              "study_reminders_enabled": True} for uid in ("A", "B")]
+    row = {"user_id": "A", "task_id": "a", "availability_id": "a-slot",
+           "status": "scheduled"}
+    if legacy:
+        row.pop("user_id")
+    starts = get_due_study_reminders(tasks, [row], slots, users, NOW, [])
+    ends = get_due_study_checkins(tasks, [row], slots, users, NOW + timedelta(hours=1), [])
+    assert [(r["user_id"], r["task_id"], r["kind"]) for r in starts] == [
+        ("A", "a", "study_session")]
+    assert [(r["user_id"], r["task_id"], r["kind"]) for r in ends] == [
+        ("A", "a", "study_session_checkin")]
