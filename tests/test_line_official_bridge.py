@@ -163,6 +163,7 @@ def test_real_ai_requires_single_note_consent_and_keeps_purple_confirmation(setu
     import line_bot
     monkeypatch.setenv("CLASSPULSE_FRIEND_NOTE_SYNC", "1")
     monkeypatch.setenv("CLASSPULSE_FRIEND_AI_SYNC", "1")
+    monkeypatch.setenv("AI_PROVIDER", "openai")
     monkeypatch.setenv("OPENAI_API_KEY", "offline-test")
     monkeypatch.setenv("OPENAI_MODEL", "offline-test")
     client, replies, forwarded = setup
@@ -235,4 +236,28 @@ def test_ai_command_default_off_does_not_start_paid_flow(setup, monkeypatch):
     assert post(client, [event("ai", message={"type": "text", "text": "AI補筆記"})]).status_code == 200
     assert "尚未啟用" in replies[-1]
     assert not storage.load_json(storage.data_path("pending_notes"))
+    assert not forwarded
+
+
+def test_gemini_consent_names_provider_and_rejects_provider_switch(setup, monkeypatch):
+    import line_bot
+    monkeypatch.setenv("CLASSPULSE_FRIEND_NOTE_SYNC", "1")
+    monkeypatch.setenv("CLASSPULSE_FRIEND_AI_SYNC", "1")
+    monkeypatch.setenv("AI_PROVIDER", "gemini")
+    monkeypatch.setenv("GEMINI_API_KEY", "offline-gemini")
+    monkeypatch.setenv("GEMINI_MODEL", "gemini-3.1-flash-lite")
+    client, replies, forwarded = setup
+    monkeypatch.setattr(line_bot, "reply_line_message",
+                        lambda token, text, choices=None: replies.append(text))
+    def send(eid, text):
+        assert post(client, [event(eid, message={"type": "text", "text": text})]).status_code == 200
+    send("open-g", "開啟網頁")
+    send("start-g", "AI補筆記")
+    assert "Google Gemini API" in replies[-1] and "改善產品" in replies[-1]
+    monkeypatch.setenv("AI_PROVIDER", "openai")
+    monkeypatch.setenv("OPENAI_API_KEY", "offline-openai")
+    monkeypatch.setenv("OPENAI_MODEL", "offline-model")
+    send("agree-switched", "同意AI整理")
+    assert "請先輸入" in replies[-1]
+    assert storage.load_json(storage.data_path("pending_notes"))[0]["stage"] == "friend_ai_consent"
     assert not forwarded
