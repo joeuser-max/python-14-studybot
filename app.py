@@ -15,6 +15,8 @@ from calendar_views import overview_events, view_options
 from mock_day import one_day_timeline, recommended_demo_day
 from line_mock_chat import start_chat, choices as mock_chat_choices, advance_chat, step_number
 from note_attachments import attachment_path
+from line_web_auth import (AuthError, SESSION_COOKIE, config as web_auth_config,
+                           resolve_session, revoke_session, staging_enabled)
 from note_tasks import candidate_tasks, confirm_question_task, assign_note_course
 from exporter import export_learning_markdown
 from storage import (
@@ -52,9 +54,40 @@ with quick1:
     st.link_button("ee-class", "https://ncueeclass.ncu.edu.tw/", use_container_width=True)
 with quick2:
     st.link_button("K 書中心預約", "https://mwa.lib.ncu.edu.tw/pwaspace/", use_container_width=True)
-demo_mode = st.toggle("展示模式（使用獨立的範例資料）", key="classpulse_demo_mode", value=False)
-select_demo_storage(demo_mode)
-if demo_mode:
+personal_staging = staging_enabled()
+if personal_staging:
+    select_demo_storage(False)
+    try:
+        origin, _, _ = web_auth_config()
+    except AuthError:
+        st.error("LINE 登入尚未設定完成。")
+        st.stop()
+    session_cookie = st.context.cookies.get(SESSION_COOKIE, "")
+    try:
+        USER_ID = resolve_session(session_cookie)
+    except (AuthError, DataError):
+        st.session_state.clear()
+        st.info("請先加入 ClassPulse 好友，再使用 LINE 登入。")
+        st.link_button("使用 LINE 登入", origin + "/auth/line/start")
+        st.stop()
+    if st.session_state.get("_verified_owner") != USER_ID:
+        st.session_state.clear()
+        st.session_state["_verified_owner"] = USER_ID
+    if st.button("登出 LINE Demo", key="personal_logout"):
+        try:
+            revoke_session(session_cookie)
+        except (AuthError, DataError):
+            st.error("登出未完成，請重試。")
+            st.stop()
+        st.session_state.clear()
+        st.rerun()
+    # Mock AI and LINE behavior, but use the user's own seeded storage rows.
+    demo_mode = True
+    st.info("私人驗收：已登入個人 Demo。LINE 推播及外部 AI 仍關閉。")
+else:
+    demo_mode = st.toggle("展示模式（使用獨立的範例資料）", key="classpulse_demo_mode", value=False)
+    select_demo_storage(demo_mode)
+if demo_mode and not personal_staging:
     seed_demo_data()
     st.info("目前為展示模式：課表、LINE 回覆和 AI 建議均為模擬；資料只寫到展示資料夾，不會發送 LINE 或呼叫外部 AI。")
     if st.button("重設展示資料", help="還原預設課程、任務、範例筆記與提醒設定"):
@@ -109,7 +142,7 @@ if demo_mode:
     demo_waiting = [task for task in demo_tasks
                     if task.get("status") == "pending"
                     and task.get("task_id") not in demo_pinned_ids]
-    if len(demo_courses) < 10:
+    if len(demo_courses) < 10 and not personal_staging:
         st.warning("目前還是舊版精簡展示資料。請按上方「重設展示資料」一次，"
                    "即可載入含完整課表、待排與預排任務的豐富展示情境；"
                    "只重設展示資料，不會影響正式使用者。")
@@ -409,7 +442,9 @@ with pages[0]:
         st.subheader("LINE 提醒設定")
         users = own(records["users"])
         current_user = users[0] if users else {"user_id": USER_ID}
-        if demo_mode:
+        if personal_staging:
+            st.info("私人驗收期間提醒與外部 AI 設定鎖定，不會真的送出訊息。")
+        elif demo_mode:
             st.info("展示模式：下方開關與訊息都只用於模擬，不代表 LINE 帳號已綁定或真的收到推播。")
         elif current_user.get("line_user_id"):
             st.success("LINE 帳號已綁定")
@@ -444,7 +479,7 @@ with pages[0]:
                 )
                 if not ai_configured:
                     st.caption("設定 OPENAI_API_KEY 與 OPENAI_MODEL 後，才能啟用課後 AI 整理。")
-            if st.form_submit_button("儲存提醒設定"):
+            if st.form_submit_button("儲存提醒設定", disabled=personal_staging):
                 def save_reminder_settings():
                     user = {
                         **current_user,
