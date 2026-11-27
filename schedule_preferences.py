@@ -99,18 +99,19 @@ def clear_preferences(user_id: str) -> int:
 
 
 def preference_overlap(start: datetime, end: datetime,
-                       cells: set[tuple[str, str]]) -> int:
-    """Fractional green hours; 30-minute work inside green earns 0.5."""
-    count = 0.0
-    cursor = start
-    while cursor < end:
-        for label, hour in PERIOD_BY_LABEL.items():
-            cell_start = cursor.replace(hour=hour,minute=0,second=0,microsecond=0)
-            cell_end = cell_start + timedelta(hours=1)
-            if (cursor.date().isoformat(),label) in cells:
-                overlap_start=max(start,cell_start)
-                overlap_end=min(end,cell_end)
-                if overlap_end>overlap_start:
-                    count+=(overlap_end-overlap_start).total_seconds()/3600
-        cursor=(cursor.replace(minute=0,second=0,microsecond=0)+timedelta(hours=1))
-    return count
+                       cells: set[tuple[str, str]]) -> float:
+    """Green hours = total unique interval intersection, at 30-minute precision."""
+    overlap=0.0
+    for day, label in cells:
+        if label not in PERIOD_BY_LABEL:
+            continue
+        try:
+            slot=datetime.combine(date.fromisoformat(day),
+                                  time(PERIOD_BY_LABEL[label]),tzinfo=TZ)
+        except ValueError:
+            continue
+        actual_start=max(start,slot)
+        actual_end=min(end,slot+timedelta(hours=1))
+        if actual_end>actual_start:
+            overlap+=(actual_end-actual_start).total_seconds()/3600
+    return overlap
