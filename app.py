@@ -5,9 +5,12 @@ from datetime import date, datetime, time, timedelta
 from uuid import uuid4
 
 import streamlit as st
+from streamlit_calendar import calendar
 
 from ai_assistant import AIError, ai_is_configured, analyze_learning_records
 from demo_data import mock_learning_suggestions, seed_demo_data
+from calendar_views import overview_events, view_options
+from mock_day import one_day_timeline, recommended_demo_day
 from exporter import export_learning_markdown
 from storage import (
     DataError, TZ, add_availabilities, add_event, add_task_to_storage,
@@ -18,7 +21,7 @@ from storage import (
 )
 from tracker import calculate_response_rate, calculate_task_progress
 from week_planner import (
-    PERIODS, board_payload, fill_remaining, place_manual,
+    PERIODS, board_payload, fill_remaining, place_manual, rolling_dates,
     set_task_blocks, unplace,
 )
 from week_board import render_week_board
@@ -64,8 +67,8 @@ def safely(action, success: str) -> None:
         st.error(str(exc))
 
 
-def handle_calendar_change() -> None:
-    value = st.session_state.get(CALENDAR_KEY, {})
+def handle_calendar_change(key: str) -> None:
+    value = st.session_state.get(key, {})
     clicked = value.get("eventClick", {}).get("event", {})
     props = clicked.get("extendedProps", {})
     kind = props.get("kind")
@@ -82,44 +85,69 @@ except DataError as exc:
     st.error(f"資料載入失敗：{exc}")
     st.stop()
 
-pages = st.tabs(["七日規劃板", "任務管理", "總覽與回饋", "Markdown 與 AI"])
+pages = st.tabs(["行事曆與拖排", "操作引導", "LINE 一日 Mock", "任務管理", "總覽與回饋", "Markdown 與 AI"])
 
 with pages[0]:
     courses = own(records["events"])
     slots = own(records["availability"])
     selected_calendar_entry = st.session_state.get("selected_calendar_entry", {})
-    st.subheader("七日規劃板")
-    st.caption("左側待排卡片可拖到任意空白節次；拉動右側把手修改工時。一鍵填滿才會自動排其他任務。")
     board_now = datetime.now(TZ)
-    action = render_week_board(board_payload(USER_ID, board_now))
-    if action:
-        nonce = action.get("nonce")
-        if nonce and st.session_state.get("last_board_nonce") != nonce:
-            st.session_state["last_board_nonce"] = nonce
-            try:
-                if action.get("type") == "drop":
-                    place_manual(USER_ID, action["task_id"], action["date"],
-                                 action["period"], int(action["blocks"]), board_now)
-                    st.rerun()
-                elif action.get("type") == "resize":
-                    set_task_blocks(USER_ID, action["task_id"], int(action["blocks"]))
-                    st.rerun()
-                elif action.get("type") == "unplace":
-                    unplace(USER_ID, action["task_id"])
-                    st.rerun()
-                elif action.get("type") == "fill":
-                    outcome = fill_remaining(USER_ID, board_now)
-                    st.session_state["week_fill_result"] = (
-                        f"本次新增 {len(outcome['placed'])} 項安排、"
-                        f"仍有 {len(outcome['skipped'])} 項無法排入。"
-                    )
-                    st.rerun()
-                elif action.get("type") == "external_edit":
-                    st.session_state["editing_external_event_id"] = action.get("id")
-            except (DataError, KeyError, ValueError) as exc:
-                st.error(f"規劃操作未儲存：{exc}")
-    if st.session_state.get("week_fill_result"):
-        st.info(st.session_state.pop("week_fill_result"))
+    st.caption("七日拖排只是排程模式；日、週、月仍可自由切換查看完整行事曆。")
+    calendar_view = st.segmented_control(
+        "行事曆檢視", ["七日拖排", "日", "週", "月"],
+        default="七日拖排", key="classpulse_calendar_view",
+    )
+    if calendar_view == "七日拖排":
+        st.subheader("七日規劃板")
+        st.caption("左側待排卡片可拖到任意空白節次；拉動右側把手修改工時。一鍵填滿才會自動排其他任務。")
+        action = render_week_board(board_payload(USER_ID, board_now))
+        if action:
+            nonce = action.get("nonce")
+            if nonce and st.session_state.get("last_board_nonce") != nonce:
+                st.session_state["last_board_nonce"] = nonce
+                try:
+                    if action.get("type") == "drop":
+                        place_manual(USER_ID, action["task_id"], action["date"],
+                                     action["period"], int(action["blocks"]), board_now)
+                        st.rerun()
+                    elif action.get("type") == "resize":
+                        set_task_blocks(USER_ID, action["task_id"], int(action["blocks"]))
+                        st.rerun()
+                    elif action.get("type") == "unplace":
+                        unplace(USER_ID, action["task_id"])
+                        st.rerun()
+                    elif action.get("type") == "fill":
+                        outcome = fill_remaining(USER_ID, board_now)
+                        st.session_state["week_fill_result"] = (
+                            f"本次新增 {len(outcome['placed'])} 項安排、"
+                            f"仍有 {len(outcome['skipped'])} 項無法排入。"
+                        )
+                        st.rerun()
+                    elif action.get("type") == "external_edit":
+                        st.session_state["editing_external_event_id"] = action.get("id")
+                except (DataError, KeyError, ValueError) as exc:
+                    st.error(f"規劃操作未儲存：{exc}")
+        if st.session_state.get("week_fill_result"):
+            st.info(st.session_state.pop("week_fill_result"))
+
+    else:
+        st.subheader(f"{calendar_view}行事曆")
+        st.caption("可用左右箭頭切換不同日期；顯示固定課、已排任務和外部行程，"
+                   "不顯示 All-day 待排任務。此檢視僅供查看，不會自動重排。")
+        overview_key = CALENDAR_KEY + "_" + calendar_view
+        calendar(
+            events=overview_events(
+                courses, slots, own(records["tasks"]),
+                own(records["plan"]), own(records["external_events"]),
+            ),
+            options=view_options(calendar_view),
+            callbacks=["eventClick"],
+            key=overview_key,
+            on_change=lambda: handle_calendar_change(overview_key),
+        )
+        if selected_calendar_entry:
+            st.info("已選取課程；下方「修改既有課程」可編輯。")
+        st.divider()
 
     st.subheader("匯入與匯出外部行事曆")
     with st.expander("外部行事曆（Google／Outlook／Apple 的 .ics）", expanded=False):
@@ -364,11 +392,124 @@ with pages[0]:
                 )
             safely(save_reminder_settings, "提醒設定已儲存")
 
+
+
+with pages[1]:
+    st.subheader("引導式操作｜從課表到 AI 建議")
+    st.caption("逐步完成核心流程；每個步驟由你決定何時操作，不會在切換或刷新時偷偷重新排程。")
+    steps = ["建立課表", "建立待排任務", "手動拖入一項", "一鍵填滿剩餘", "LINE Mock 與 AI"]
+    current = max(0, min(4, int(st.session_state.get("classpulse_guide_step", 0))))
+    st.progress((current + 1) / len(steps), text=f"第 {current + 1}／5 步：{steps[current]}")
+    left, center, right = st.columns([1, 4, 1])
+    with left:
+        if st.button("上一步", disabled=current == 0, key="guide_prev"):
+            st.session_state["classpulse_guide_step"] = current - 1
+            st.rerun()
+    with right:
+        if st.button("下一步", disabled=current == 4, key="guide_next"):
+            st.session_state["classpulse_guide_step"] = current + 1
+            st.rerun()
+    if current == 0:
+        st.write(f"目前有 **{len(own(records['events']))}** 門每週課程。"
+                 "展示模式內已提供虛構課表；也可以在這裡直接加入自己的課程。")
+        with st.form("guide_add_class", clear_on_submit=True):
+            guide_class_title = st.text_input("課程名稱", placeholder="例如：控制系統")
+            c1, c2, c3 = st.columns(3)
+            with c1:
+                guide_weekday = st.selectbox("星期", list(WEEKDAYS),
+                                             format_func=lambda k: WEEKDAYS[k], key="guide_weekday")
+            with c2:
+                guide_start = st.time_input("上課", value=time(13, 0), key="guide_start")
+            with c3:
+                guide_end = st.time_input("下課", value=time(15, 0), key="guide_end")
+            if st.form_submit_button("儲存課程"):
+                event = {
+                    "event_id": create_id("event"), "user_id": USER_ID,
+                    "event_type": "class", "title": guide_class_title.strip(),
+                    "weekday": guide_weekday,
+                    "start_time": guide_start.strftime("%H:%M"),
+                    "end_time": guide_end.strftime("%H:%M"),
+                    "offset_minutes": 10, "prompt_template": "class_feedback", "enabled": True,
+                }
+                safely(lambda: add_event(event), "課程已新增；進入下一步建立任務")
+    elif current == 1:
+        st.write(f"目前有 **{len([t for t in own(records['tasks']) if t['status'] == 'pending'])}** 筆待排任務。"
+                 "新增後會留在待排盒，不會自動排進日曆。")
+        with st.form("guide_add_task", clear_on_submit=True):
+            guide_subject = st.text_input("科目", placeholder="例如：Python")
+            guide_title = st.text_input("讀書任務", placeholder="例如：練習函式題目")
+            guide_due = st.date_input("期限", value=datetime.now(TZ).date() + timedelta(days=5),
+                                      key="guide_due")
+            if st.form_submit_button("加入待排盒"):
+                task = {
+                    "task_id": create_id("task"), "user_id": USER_ID,
+                    "subject": guide_subject.strip(), "title": guide_title.strip(),
+                    "deadline": guide_due.isoformat(), "estimated_minutes": 60,
+                    "status": "pending", "preferred_availability_id": "",
+                }
+                safely(lambda: add_task_to_storage(task), "新增完成，任務留在待排盒")
+    elif current == 2:
+        st.info("切換到上方「行事曆與拖排」→ 選「七日拖排」，"
+                "在左側拉動一項任務右側把手，再拖進右側未來空格。"
+                "手動安排一項時，其他待排任務絕不自行移動。")
+        st.write(f"目前已排 **{len(board_payload(USER_ID)['scheduled'])}** 項，"
+                 f"待排 **{len(board_payload(USER_ID)['tasks'])}** 項。")
+    elif current == 3:
+        st.info("只在你按下按鈕時，系統才依 Deadline、時長及衝突規則，"
+                "填入其餘待排任務。手動固定時段不會被重新安排。")
+        if st.button("一鍵填滿剩餘任務", key="guide_fill_remaining"):
+            try:
+                result = fill_remaining(USER_ID)
+                st.success(f"新增 {len(result['placed'])} 個排程；"
+                           f"{len(result['skipped'])} 項仍沒有合適空格。")
+                st.rerun()
+            except (DataError, ValueError) as exc:
+                st.error(str(exc))
+    else:
+        st.info("切換到上方「LINE 一日 Mock」：選擇一天，逐事件查看課程提醒、"
+                "讀書開始及結束回報，還能提交模擬課堂筆記。"
+                "再前往「總覽與回饋」或「Markdown 與 AI」查看分析結果。")
+        if not demo_mode:
+            st.warning("請先開啟最上方的展示模式，LINE 模擬完全不需要真實金鑰。")
+
+with pages[2]:
+    st.subheader("LINE 一日 Mock｜一整天的提醒、互動與回饋")
+    st.caption("逐段演示一天的提醒時間軸；這是網頁模擬，不發送任何 LINE 推播或 AI API 請求。")
+    if not demo_mode:
+        st.info("請先開啟網頁頂端的「展示模式」，即可用虛構課表體驗完整一日模擬。")
+    else:
+        demo_board = board_payload(USER_ID)
+        days = rolling_dates(datetime.now(TZ))
+        preferred_day = recommended_demo_day(days, courses, demo_board["scheduled"])
+        mock_day = st.selectbox(
+            "選擇模擬日期",
+            days,
+            index=days.index(preferred_day),
+            format_func=lambda d: f"{d:%m/%d}（{WEEKDAYS[d.isoweekday()]}）",
+            key="line_mock_date",
+        )
+        daily_events = one_day_timeline(mock_day, courses, demo_board["scheduled"])
+        if not daily_events:
+            st.info("這一天尚無課程或已排讀書任務。可選其他日期，或先建立課表、拖排任務。")
+        else:
+            selected_index = st.selectbox(
+                "選擇這一天的事件",
+                list(range(len(daily_events))),
+                format_func=lambda i: f"{daily_events[i]['time']}  {daily_events[i]['title']}",
+                key="line_mock_timeline_index",
+            )
+            st.progress((selected_index + 1) / len(daily_events),
+                        text=f"第 {selected_index + 1}／{len(daily_events)} 個事件")
+            event = daily_events[selected_index]
+            st.markdown(f"**{event['time']}｜{event['title']}**")
+            st.info(event["message"])
+            st.caption("上面的通知只顯示在瀏覽器，不代表 LINE API 已傳送成功。")
+        st.divider()
     if demo_mode:
         with st.expander("模擬 LINE 課後提醒與補筆記", expanded=True):
             st.caption("以下訊息僅為網頁展示，不會送到 LINE，也不需要 Webhook／API Key。")
-            if courses:
-                demo_course_by_id = {c["event_id"]: c for c in courses}
+            if any(c.get("weekday") == mock_day.isoweekday() for c in courses):
+                demo_course_by_id = {c["event_id"]: c for c in courses if c.get("weekday") == mock_day.isoweekday()}
                 demo_selected_id = st.selectbox(
                     "示範課程", list(demo_course_by_id),
                     format_func=lambda eid: demo_course_by_id[eid]["title"],
@@ -388,7 +529,7 @@ with pages[0]:
                             "feedback_id": create_id("feedback"),
                             "user_id": USER_ID,
                             "event_id": demo_selected_id,
-                            "class_date": datetime.now(TZ).date().isoformat(),
+                            "class_date": mock_day.isoformat(),
                             "reminder_id": "",
                             "received_at": datetime.now(TZ).isoformat(timespec="seconds"),
                             "content": demo_note.strip(),
@@ -398,10 +539,11 @@ with pages[0]:
                         }
                         safely(lambda: save_feedback(demo_feedback), "模擬回覆已儲存到展示資料（未傳送 LINE）")
             else:
-                st.info("請先在展示模式新增課程，才能預覽 LINE 課後提醒。")
+                st.info("這一天沒有課，請選擇其他有課的日期，或在「操作引導」先新增課程。")
 
 
-with pages[1]:
+
+with pages[3]:
     st.subheader("新增讀書任務")
     slot_map = {s["availability_id"]: s for s in own(records["availability"])}
     task_notes = sorted(
@@ -576,7 +718,7 @@ with pages[1]:
     else:
         st.info("尚無已儲存的讀書計畫。")
 
-with pages[2]:
+with pages[4]:
     st.subheader("學習回饋與參與紀錄")
     reminder_stats = calculate_response_rate(records["reminders"], records["feedback"], USER_ID)
     task_stats = calculate_task_progress(records["tasks"], USER_ID)
@@ -789,7 +931,7 @@ with pages[2]:
     else:
         st.info("目前沒有符合篩選條件的筆記；可清除篩選或先記錄一筆課後回饋。")
 
-with pages[3]:
+with pages[5]:
     st.subheader("AI-ready Markdown 匯出")
     markdown = export_learning_markdown(records, datetime.now(TZ), USER_ID)
     st.warning("匯出檔包含你的課程與筆記。已遮蔽部分 Email／手機格式，但仍請人工檢查個資後再提供給外部 AI。")
