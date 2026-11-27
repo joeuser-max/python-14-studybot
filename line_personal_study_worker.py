@@ -38,7 +38,7 @@ def require_config(flag="CLASSPULSE_FRIEND_STUDY_PUSH"):
         raise ValueError("Personal study push requires isolated official OA opt-in")
 
 
-def sessions(now=None, *, checkin=False):
+def sessions(now=None, *, checkin=False, automatic=False):
     """Only user-confirmed, non-seeded AI tasks with owner-scoped note and slot."""
     require_config()
     now = (now or datetime.now(storage.TZ)).astimezone(storage.TZ)
@@ -56,18 +56,23 @@ def sessions(now=None, *, checkin=False):
             uid = _owner(subject)
         except AuthError:
             continue
+        if automatic and user.get("study_reminders_enabled") is not True:
+            continue
         for task in tasks:
             if (task.get("user_id") != uid or task.get("status") != "pending"
-                    or task.get("source") != "ai_confirmed" or task.get("demo_seed_version")
-                    or not task.get("source_question_key")):
+                    or task.get("demo_seed_version")
+                    or (not automatic and (task.get("source") != "ai_confirmed"
+                                           or not task.get("source_question_key")))):
                 continue
             tid = task["task_id"]
             if sum(t.get("user_id") == uid and t.get("task_id") == tid for t in tasks) != 1:
                 continue
             own_notes = [n for n in notes if n.get("user_id") == uid
+                         and task.get("source_feedback_id")
                          and n.get("feedback_id") == task.get("source_feedback_id")
                          and not n.get("demo_seed_version")]
-            if len(own_notes) != 1 or not isinstance(own_notes[0].get("ai_analysis"), dict):
+            cached = own_notes[0] if len(own_notes) == 1 and isinstance(own_notes[0].get("ai_analysis"), dict) else None
+            if not automatic and cached is None:
                 continue
             rows = [p for p in plan if p.get("user_id") == uid and p.get("task_id") == tid
                     and p.get("status") == "scheduled"]
@@ -91,18 +96,18 @@ def sessions(now=None, *, checkin=False):
             rid = "personal_study_" + hashlib.sha256(identity.encode()).hexdigest()[:32]
             out.append({"reminder_id": rid, "user_id": uid, "task_id": tid,
                         "availability_id": matching[0]["availability_id"], "start": start,
-                        "minutes": minutes, "user": user, "task": task, "note": own_notes[0]})
+                        "minutes": minutes, "user": user, "task": task, "note": cached})
     return sorted(out, key=lambda s: (s["start"], s["task_id"]))
 
 
-def deliver_once(selection, now=None):
+def deliver_once(selection, now=None, *, automatic=False):
     """Return waiting/sent/failed/invalid; only the selected exact start is armed."""
     require_config()
     now = (now or datetime.now(storage.TZ)).astimezone(storage.TZ)
     storage.DATA_DIR.mkdir(parents=True, exist_ok=True)
-    with FileLock(str(storage.DATA_DIR / ".personal-study-worker.lock"), timeout=15):
+    with FileLock(str(storage.DATA_DIR / ".friend-e2e.lock"), timeout=15), FileLock(str(storage.DATA_DIR / ".personal-study-worker.lock"), timeout=15):
         # Re-read owner, task, plan and slot rather than sending stale snapshots.
-        matches = [s for s in sessions(now)
+        matches = [s for s in sessions(now, automatic=automatic)
                    if s["reminder_id"] == selection["reminder_id"]
                    and s["user_id"] == selection["user_id"]
                    and s["minutes"] == selection["minutes"]]
@@ -124,9 +129,10 @@ def deliver_once(selection, now=None):
             return "sent"
         # Explicit selection consents to sending cached analysis to the same
         # LINE account. A dict is required by sessions(), so no API call occurs.
+        cached = session["note"]
         text = study_start_message(session["task"],
-                                   dict(session["user"], ai_after_class_enabled=True),
-                                   [session["note"]])
+                                   dict(session["user"], ai_after_class_enabled=cached is not None),
+                                   [cached] if cached is not None else [])
         try:
             accepted = push_line_message(session["user"], saved, text)
         except requests.HTTPError as exc:
@@ -144,12 +150,12 @@ def deliver_once(selection, now=None):
         return status
 
 
-def deliver_checkin_once(selection, now=None):
+def deliver_checkin_once(selection, now=None, *, automatic=False):
     """Only after the selected session's start push was accepted."""
     require_config()
     now = (now or datetime.now(storage.TZ)).astimezone(storage.TZ)
-    with FileLock(str(storage.DATA_DIR / ".personal-study-worker.lock"), timeout=15):
-        matches = [s for s in sessions(now, checkin=True)
+    with FileLock(str(storage.DATA_DIR / ".friend-e2e.lock"), timeout=15), FileLock(str(storage.DATA_DIR / ".personal-study-worker.lock"), timeout=15):
+        matches = [s for s in sessions(now, checkin=True, automatic=automatic)
                    if s["reminder_id"] == selection["reminder_id"]
                    and s["user_id"] == selection["user_id"]
                    and s["minutes"] == selection["minutes"]]
@@ -210,7 +216,7 @@ def main():
     selected = options[int(raw)-1]
     prompt = ("同意此任務開始及結束時向自己的 LINE 推送？輸入 SEND：" if checkin else
               "同意在該時段將已保存的 AI 摘要推送至該任務自己的 LINE？輸入 SEND：")
-    if input(prompt).strip() != "SEND":
+    if input(prompt).strip().upper() != "SEND":
         return
     print("已選定單一讀書時段；移動/取消任務、Ctrl+C 或超過 15 分鐘窗口即停止。")
     if checkin:
