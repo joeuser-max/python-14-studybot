@@ -208,7 +208,9 @@ def main():
     if not raw.isdecimal() or not 1 <= int(raw) <= len(options):
         return
     selected = options[int(raw)-1]
-    prompt = ("同意此任務開始及結束時向自己的 LINE 推送？輸入 SEND：" if checkin else\n              "同意在該時段將已保存的 AI 摘要推送至該任務自己的 LINE？輸入 SEND：")\n    if input(prompt).strip() != "SEND":
+    prompt = ("同意此任務開始及結束時向自己的 LINE 推送？輸入 SEND：" if checkin else
+              "同意在該時段將已保存的 AI 摘要推送至該任務自己的 LINE？輸入 SEND：")
+    if input(prompt).strip() != "SEND":
         return
     print("已選定單一讀書時段；移動/取消任務、Ctrl+C 或超過 15 分鐘窗口即停止。")
     if checkin:
