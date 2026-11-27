@@ -3,7 +3,7 @@ on:
   pull_request:
     branches: [main, feature/rich-demo-fixtures]
   push:
-    branches: [main]
+    branches: [main, integrate/v2-line-preference-final1]
 jobs:
   pytest:
     runs-on: ubuntu-latest
