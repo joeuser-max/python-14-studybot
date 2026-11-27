@@ -179,6 +179,17 @@ def main():
                     expect(page.locator(".cards .card")).to_have_count(0, timeout=25000)
                     expect(page.locator(".event.study")).to_have_count(11)
 
+                    # End-to-end UI: a source note question becomes a separately
+                    # confirmed purple task, and only THEN appears in the drag deck.
+                    page.get_by_role("tab", name="任務管理").click()
+                    expect(page.get_by_role("heading",
+                        name="AI：從課後疑問逐項建立複習任務")).to_be_visible()
+                    page.get_by_role("button",
+                        name="確認新增到紫色待排區").first.click()
+                    page.get_by_role("tab", name="行事曆與拖排").click()
+                    expect(page.locator(".cards .card.ai")).to_have_count(1,timeout=25000)
+                    expect(page.locator(".cards .card.ai")).to_contain_text("30 分鐘")
+
                     assert not errors, "JavaScript errors: " + "; ".join(errors)
                     print("通過：日週月檢視、五步引導、LINE 一日 Mock、七日拖排與一鍵填滿")
                 except Exception:
