@@ -91,7 +91,9 @@ export default function(component) {
     card.append(info,grip);
     card.draggable=true;
     card.ondragstart=(evt)=>{dragged={task_id:t.task_id,blocks};
-      evt.dataTransfer.setData("text/plain",t.task_id);};
+      evt.dataTransfer.setData("text/plain",t.task_id);
+      evt.dataTransfer.setData("application/x-classpulse-blocks",String(blocks));
+      evt.dataTransfer.effectAllowed="move";};
     card.onclick=(evt)=>{if(evt.target===grip)return;selected={task_id:t.task_id,blocks};
       deck.querySelectorAll(".card").forEach(x=>x.classList.remove("selected"));card.classList.add("selected");};
     grip.onpointerdown=(evt)=>{
@@ -119,7 +121,13 @@ export default function(component) {
       c.ondragover=(e)=>{if(!past){e.preventDefault();c.classList.add("over");}};
       c.ondragleave=()=>c.classList.remove("over");
       c.ondrop=(e)=>{e.preventDefault();c.classList.remove("over");
-        if(!past&&dragged)send({type:"drop",task_id:dragged.task_id,date:d.date,period:p.label,blocks:dragged.blocks});};
+        if(past)return;
+        const transferred=e.dataTransfer.getData("text/plain");
+        const transferBlocks=Number(e.dataTransfer.getData("application/x-classpulse-blocks"));
+        const actualTask=transferred || (dragged&&dragged.task_id);
+        const actualBlocks=(Number.isInteger(transferBlocks)&&transferBlocks>=1&&transferBlocks<=4)
+          ?transferBlocks:(dragged?dragged.blocks:1);
+        if(actualTask)send({type:"drop",task_id:actualTask,date:d.date,period:p.label,blocks:actualBlocks});};
       c.onclick=()=>{if(!past&&selected)send({type:"drop",task_id:selected.task_id,date:d.date,period:p.label,blocks:selected.blocks});};
       pos(c,i+2,k+2);
     });
@@ -133,7 +141,10 @@ export default function(component) {
       const btn=document.createElement("button");btn.textContent="×";btn.title="移回待排";btn.type="button";
       btn.onclick=(e)=>{e.stopPropagation();send({type:"unplace",task_id:meta.task_id});};
       el.prepend(btn);el.draggable=true;el.ondragstart=(e)=>{
-        dragged={task_id:meta.task_id,blocks:meta.blocks||1};e.dataTransfer.setData("text/plain",meta.task_id);};
+        dragged={task_id:meta.task_id,blocks:meta.blocks||1};
+        e.dataTransfer.setData("text/plain",meta.task_id);
+        e.dataTransfer.setData("application/x-classpulse-blocks",String(meta.blocks||1));
+        e.dataTransfer.effectAllowed="move";};
     }
     if(kind==="external"){el.title="點擊編輯，變更前會再次確認";el.onclick=()=>send({type:"external_edit",id:meta.id});}
     pos(el,idx+2,from-8+2,to-from);
