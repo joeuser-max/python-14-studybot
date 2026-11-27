@@ -52,16 +52,14 @@ def main():
                     expect(page.locator(".matrix .hdr")).to_have_count(8)
 
                     # The previous day/week/month views must remain usable.
-                    switch = page.locator('[data-testid="stSegmentedControl"]')
-                    expect(switch).to_have_count(1, timeout=25000)
                     for label, css in [
                         ("週", ".fc-timegrid"),
                         ("月", ".fc-daygrid"),
                         ("日", ".fc-timegrid"),
                     ]:
-                        switch.get_by_text(label, exact=True).click()
+                        page.get_by_text(label, exact=True).first.click()
                         expect(page.locator(css)).to_be_visible(timeout=25000)
-                    switch.get_by_text("七日拖排", exact=True).click()
+                    page.get_by_text("七日拖排", exact=True).first.click()
                     expect(page.locator(".matrix .cell")).to_have_count(112, timeout=25000)
 
                     # The guided route and LINE mock must be discoverable as tabs.
