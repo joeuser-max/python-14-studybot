@@ -1,5 +1,11 @@
 # ClassPulse｜A／B 整合版操作手冊
 
+**第一次 Final 整合（PR #17 草稿）：**[完整變更來源、糾錯與貢獻分界](docs/final-integration-1-audit.md)。此版本以 PR #16 的 V2 介面為基準；不代表已合併至目前分岔的 `main`。
+
+**綠色偏好：**在七日拖排點「一鍵安排：標記綠色偏好」，在可用空白格直接點選／拖畫綠色，再點「確認偏好並一鍵安排」。綠色是軟優先、**不是 only**；不標綠也仍可安排合法空檔。標記不按七天強制重設；手排固定任務不被移動。
+
+**LINE-first：**已綁定帳號可傳送 `筆記 我的內容` 快速保存未分類文字、`查看筆記`、`搜尋 關鍵字`；傳送 TXT、DOCX、文字型 PDF 可擷取內容，PDF 原檔保留供 V2 筆記庫下載。LINE 補筆記精確課次互動、Webhook 驗簽與提醒仍保留；未完成任務只重排該項，AI 建議須確認且先進待排盒。實際 LINE 服務需 Token、公開 HTTPS Webhook 與 Worker；目前沒有將 Streamlit 部署至共用雲端資料庫。
+
 **V2 架構與驗收邊界：**[七日規劃板／AI 教練／匿名訓練模板設計說明](docs/architecture-v2.md)。
 
 **三分鐘期末 Demo：**[實際操作腳本、範例 ICS 與 Mock AI 驗收](docs/demo-v2.md)。
@@ -15,7 +21,7 @@
 
 ClassPulse 有六個主頁籤：
 
-- **行事曆與拖排**：上方切換「七日拖排／日／週／月」。七日拖排顯示 T+0 ～ T+6、每日固定 16 節與待排任務盒，支援拉長卡片、只拖入單一任務、一鍵填滿剩餘任務。日／週／月可以往前往後切換，純顯示課程、已排讀書和 ICS 外部行程；不會因切換視圖自動重新排程。取消舊式 All-day Standby 時段。
+- **行事曆與拖排**：上方切換「七日拖排／日／週／月」。七日拖排顯示 T+0 ～ T+6、每日固定 16 節與待排任務盒，支援拉長卡片、只拖入單一任務、一鍵安排：標記綠色偏好（然後確認）。日／週／月可以往前往後切換，純顯示課程、已排讀書和 ICS 外部行程；不會因切換視圖自動重新排程。取消舊式 All-day Standby 時段。
 - **操作引導**：五步引導「建立課程 → 新增待排任務 → 手動拖排 → 一鍵填滿 → LINE Mock／AI」；前兩步可以直接建立資料，第四步才會在按鈕確認時自動填滿。
 - **LINE 一日 Mock**：需先開啟展示模式。選擇當天，依時間順序模擬上課、課後提醒、讀書開始與時段結束回報；仍可填寫 1–5 自評與課堂筆記儲存到隔離展示資料。**不傳送真實 LINE、也不呼叫 AI**。
   - **LINE 虛擬對話**：聊天室泡泡與快速回覆按鈕；依序選擇「補筆記 → 星期 → 上課時段／課程 → 1–5 自評 → 傳送筆記 → 是否接受 Mock AI 任務」。每個步驟可取消或重新開始，筆記只寫展示資料；只有明確確認後才新增待排任務，**不自動重排其他事項**。
@@ -64,7 +70,7 @@ py -3.11 --version
 切換到專案資料夾（若你的資料夾位置不同，請修改路徑）：
 
 ```powershell
-Set-Location 'C:\Users\yuzhe\Desktop\程式設計-python期末專案作業\python-14-studybot\python-14-studybot'
+# 請先以 VS Code「File → Open Folder」開啟你的專案根目錄（有 app.py），Terminal 就在該資料夾
 ```
 
 建立虛擬環境並安裝套件：
@@ -103,7 +109,7 @@ py -3.11 -m venv .venv
 
 - 節次依序：`1 2 3 4 Z 5 6 7 8 9 A B C D E F`。每格代表整點開始的 60 分鐘規劃單位。`1–4、Z、5–9、A–D` 對照中央大學常用課表；**`E/F`（22:00／23:00）為 ClassPulse 延伸時間，不宣稱是校方正式上課節次**。
 - **左側待排任務盒**：卡片右側虛線把手可水平拉伸、縮短（1–4 節）。直接拖到右側任一未佔用格；也可以先點選任務，再點目標格。
-- **手動與自動完全分開**：拖入 A 只會寫入 A，B/C 不動；重新整理也不會自動排其他任務。想讓其餘任務依 Deadline → 同期限較長優先、並避開固定課和外部行程時，才點 **「一鍵填滿剩餘任務」**。
+- **手動與自動完全分開**：拖入 A 只會寫入 A，B/C 不動；重新整理也不會自動排其他任務。「一鍵安排」先進偏好畫筆，可不標綠直接確認；排程先滿足 Deadline 與衝突限制，再優先命中綠格及分散負荷，保留原手排。
 - 日曆上藍色讀書卡片可按 `×` 移回待排區；修改某一任務只影響該任務。
 - **可用時段預設涵蓋七天全部未來節次**，不再需要另外填寫「指定固定時段」或勾選幾十個半小時區塊。若有外部約會或課程，就視為不可排入。
 
@@ -158,7 +164,7 @@ Webhook 啟動前要設定 Channel Secret、Channel Access Token 和綁定碼；
 第一次設定時，在專案資料夾的 PowerShell 執行以下命令，複製範例檔並用記事本編輯：
 
 ```powershell
-Set-Location 'C:\Users\yuzhe\Desktop\程式設計-python期末專案作業\python-14-studybot\python-14-studybot'
+# 請先以 VS Code「File → Open Folder」開啟你的專案根目錄（有 app.py），Terminal 就在該資料夾
 if (-not (Test-Path '.env')) { Copy-Item '.env.example' '.env' }
 notepad .env
 ```
@@ -244,7 +250,7 @@ LINE 不能直接連到 `localhost`，需用 HTTPS Tunnel 將公網請求轉到�
 另開一個 PowerShell 視窗，切到專案資料夾並啟動 Worker。Worker 會自動讀取相同的 `.env`，不必再貼一次 Token：
 
 ```powershell
-Set-Location 'C:\Users\yuzhe\Desktop\程式設計-python期末專案作業\python-14-studybot\python-14-studybot'
+# 請先以 VS Code「File → Open Folder」開啟你的專案根目錄（有 app.py），Terminal 就在該資料夾
 .\.venv\Scripts\python.exe reminder_worker.py
 ```
 
@@ -271,7 +277,7 @@ Set-Location 'C:\Users\yuzhe\Desktop\程式設計-python期末專案作業\pytho
 2. 在 Streamlit 新增一門課，星期選今天、下課時間設為幾分鐘後，提醒偏移設 `0`。開始時間必須早於下課時間。
 3. 保持 Worker 執行。課程結束後約一分鐘內，LINE 應收到課後提醒；首次觸發需在排定提醒時間後 5 分鐘內。
 4. 在 LINE **輸入** `補筆記`，依序選星期、回覆課表清單上的編號、回報理解進度 `1` 至 `5`，再輸入上課重點或疑問。
-5. 已在 Streamlit 啟用 AI 同意且 Flask 設定 OpenAI API 時，LINE 會回傳整理摘要、課堂重點、待釐清問題與一項複習任務建議。回覆「加入讀書任務」後才會建立任務並依可用時段排程；回覆「先不用」只保留筆記。未啟用 AI 時，筆記與進度仍會照常保存。
+5. 已在 Streamlit 啟用 AI 同意且 Flask 設定 OpenAI API 時，LINE 會回傳整理摘要、課堂重點、待釐清問題與一項複習任務建議。回覆「加入讀書任務」後僅新增到待排盒，不會自動排入時間；回覆「先不用」只保留筆記。實際要放入日曆時，仍需在 V2 七日板手動拖入或按綠色偏好的一鍵安排。未啟用 AI 時，筆記與進度仍會照常保存。
 6. 如果手動補登的課次沒有成功送出的課後提醒，筆記仍會保存，但不會計入提醒回覆率。
 
 筆記日期只會定位最近 7 天內已結束的同星期課次。輸入 `取消` 可中止流程；選課後 10 分鐘沒有完成時，狀態會逾時清除。Webhook 狀態和筆記分別可在 `data\processed_webhooks.json`、`data\feedback.json` 查看。
@@ -280,7 +286,7 @@ Set-Location 'C:\Users\yuzhe\Desktop\程式設計-python期末專案作業\pytho
 
 AI 整理不是記錄課後回饋或手動排程的必要條件。若要讓 LINE 回饋後自動整理筆記，請在 `.env` 填入 OpenAI API Key 和支援 Structured Outputs 的模型名稱，然後重新啟動 Flask 與 Streamlit。
 
-在 Streamlit「LINE 提醒設定」勾選並儲存「同意使用 AI 整理課後筆記並建議複習任務」。每次回饋只會把課程名稱、筆記文字及使用者自評進度送至 OpenAI，不會傳送 LINE User ID 或資料 ID。OpenAI API 可能依帳戶方案計費。AI 建議的複習任務必須先由使用者在 LINE 確認；確認後才新增，接著由既有規則式 scheduler 依期限、已固定任務與可用時段安排，不是讓模型直接改動行事曆。預設 Deadline 為課後 7 天，可在 Streamlit 修改。
+在 Streamlit「LINE 提醒設定」勾選並儲存「同意使用 AI 整理課後筆記並建議複習任務」。每次回饋只會把課程名稱、筆記文字及使用者自評進度送至 OpenAI，不會傳送 LINE User ID 或資料 ID。OpenAI API 可能依帳戶方案計費。AI 建議的複習任務必須先由使用者在 LINE 確認；確認後才新增到待排盒，由使用者在 V2 網頁拖排或選擇偏好後一鍵安排；不是讓模型直接改動行事曆。預設 Deadline 為課後 7 天，可在 Streamlit 修改。
 
 若未同意或 API 尚未設定，筆記與進度仍會保存，但不會送往 AI。API 失敗時也會保留原始回饋。舊的「Markdown 與 AI」頁面仍可在使用者另行同意後，手動分析匯出的學習資料。不要把 API Key 放進 `.env.example`、README、截圖或 Git。
 
