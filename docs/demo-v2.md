@@ -7,7 +7,7 @@
 1. 在正確 Repository 的根目錄執行 `python -m pip install -r requirements.txt`、`python -m pytest -q`。
 2. 執行 `python -m streamlit run app.py`。在首頁上方開啟 **「展示模式（使用獨立的範例資料）」**，按 **「重設展示資料」**。此操作只修改獨立的展示 JSON，不會覆寫正式資料。
 3. 確認「七日規劃板」左側有 **至少兩項待排任務**。若沒有，可能是先前 Demo 的資料已改動，請重新按「重設展示資料」。
-4. 備妥 `examples/demo_external_calendar.ics`，以及開啟 GitHub PR 頁面作為程式架構證據。
+4. 備妥 `examples/demo_external_calendar.ics`，以及開啟 GitHub PR 頁面作為程式架構證據。若要展示群組節奏合成，再準備 `examples/fictional_peer_evening.json` 與 `examples/fictional_peer_morning.json`（**全為虛構範例**）。
 
 ## 現場三分鐘
 
@@ -19,6 +19,8 @@
 | 1:30–2:05 | 進「總覽與回饋」顯示完成率、LINE 回報率、Focus XP，匯出匿名訓練模板 | 遊戲化鼓勵參與，但自填紀錄不代表學力，不宣稱虛構的校內排名 |
 | 2:05–2:45 | 選一種訓練模板，在展示模式點「體驗教練產生候選方案（Mock）」；顯示候選時間並按確認 | AI API 的**資料契約和人工確認入口**可操作；模型建議需通過本地排程驗證，Mock 不使用網路 |
 | 2:45–3:00 | 指向 `study_coach.py` 的 Gemini HTTP 入口與 GitHub CI；結尾強調 AI 不能直接覆寫行事曆 | 真的有可設定的 Model API，但沒金鑰時仍能展示完整骨架 |
+
+若評審希望看到多人協作而時間允許，可在「總覽與回饋」一次上傳兩個虛構同儕 JSON，選擇「匿名小組綜合模板」，展示**中位數每週節奏＋時段偏好**如何成為 AI 的參考模板。這是離線資料交換，沒有登入系統，也不宣稱有真實校內排行。當待排盒已由一鍵填滿清空，Mock 教練仍可提出**只針對自動安排任務**的更好時段建議；不能覆寫手動固定的任務。
 
 ## 區分可驗證與尚未完成
 
