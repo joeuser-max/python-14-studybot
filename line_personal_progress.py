@@ -1,6 +1,4 @@
 """Explicit personal check-in replies, never implicit completion or note capture."""
-from datetime import datetime
-
 import line_bot
 import storage
 from scheduler import _scheduled_start
@@ -16,17 +14,21 @@ def handle_progress(event, user, now):
     command = parts[0]
     uid = user["user_id"]
     stage = "awaiting_remaining_minutes" if command in ("剩餘", "取消回報") else "awaiting_response"
-    rows = [r for r in storage.load_json(storage.data_path("reminders"))
-            if r.get("user_id") == uid and r.get("kind") == "study_session_checkin"
-            and r.get("personal_study_test") is True and r.get("status") == "sent"
-            and r.get("progress_status") == stage]
-    if not rows:
-        # No personal check-in: preserve the prior legacy command route.
-        return None
+    personal = [r for r in storage.load_json(storage.data_path("reminders"))
+                if r.get("user_id") == uid and r.get("kind") == "study_session_checkin"
+                and r.get("personal_study_test") is True and r.get("status") == "sent"]
+    rows = [r for r in personal if r.get("progress_status") == stage]
     token = event.get("replyToken", "")
     def reply(message):
         line_bot.reply_line_message(token, message)
         return True
+    if not rows:
+        # Explicit personal task IDs and dedicated progress commands must
+        # never fall through to the legacy store after completion/replay.
+        if command in ("剩餘", "取消回報") or (len(parts) >= 2 and any(
+                r.get("task_id") == parts[1] for r in personal)):
+            return reply("目前沒有符合此指令的待回報任務。")
+        return None
     if command == "剩餘":
         if len(parts) == 2:
             tid, minute_text = None, parts[1]
