@@ -81,7 +81,7 @@ def validate_coach_output(data: dict, board: dict, user_id: str,
     allowed_tasks = {t["task_id"]: t for t in board["tasks"]}
     valid_dates = {day["date"] for day in board["days"]}
     records = _read_all()
-    valid, invalid, used = [], [], set()
+    valid, invalid, used = [], [], {}
     for action in suggestions:
         if not isinstance(action, dict):
             invalid.append("格式不合法")
@@ -106,7 +106,7 @@ def validate_coach_output(data: dict, board: dict, user_id: str,
         except (DataError, ValueError) as exc:
             invalid.append(f"{task_id}：{exc}")
             continue
-        used.add(task_id)
+        used[task_id] = (begin, end)
         valid.append({
             "task_id": task_id, "date": day, "period": period, "blocks": blocks,
             "reason": str(action.get("reason") or "AI 建議")[:200],
