@@ -409,8 +409,15 @@ def get_due_study_checkins(
     for row in plan:
         if row.get("status") != "scheduled":
             continue
-        task = task_map.get(row.get("task_id"))
-        slot = slot_map.get(row.get("availability_id"))
+        owner = row.get("user_id")
+        if owner is None:
+            # Preserve the unambiguous legacy ownerless plan contract.
+            owners = {uid for uid, tid in task_map if tid == row.get("task_id")}
+            if len(owners) != 1:
+                continue
+            owner = next(iter(owners))
+        task = task_map.get((owner, row.get("task_id")))
+        slot = slot_map.get((owner, row.get("availability_id")))
         if not task or not slot or task.get("status") != "pending":
             continue
         user_id = task.get("user_id")
