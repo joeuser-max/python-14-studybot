@@ -67,8 +67,13 @@ def main():
                     expect(page.get_by_text("引導式操作｜從課表到 AI 建議")).to_be_visible()
                     # Step 4 must launch the preference painting phase, not run
                     # the old direct greedy fill behind the user's back.
-                    for _ in range(3):
+                    for target_step in (2, 3, 4):
                         page.get_by_role("button", name="下一步").click()
+                        # Streamlit reruns asynchronously after each click; don't
+                        # send the next action before the prior step is rendered.
+                        expect(page.get_by_text(
+                            f"第 {target_step}／5 步", exact=False
+                        )).to_be_visible(timeout=25000)
                     expect(page.get_by_role("button", name="開始設定綠色偏好（尚不自動排程）")).to_be_visible()
                     page.get_by_role("button", name="開始設定綠色偏好（尚不自動排程）").click()
                     page.get_by_role("tab", name="行事曆與拖排").click()
