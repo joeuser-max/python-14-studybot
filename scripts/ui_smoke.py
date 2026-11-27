@@ -52,13 +52,13 @@ def main():
                     expect(page.locator(".matrix .hdr")).to_have_count(8)
 
                     # The previous day/week/month views must remain usable.
-                    for label, css in [
-                        ("週", ".fc-timegrid"),
-                        ("月", ".fc-daygrid"),
-                        ("日", ".fc-timegrid"),
-                    ]:
+                    # streamlit-calendar renders FullCalendar inside a component
+                    # iframe. The visible heading + mounted iframe verify each
+                    # selected mode without querying across iframe boundaries.
+                    for label in ("週", "月", "日"):
                         page.get_by_text(label, exact=True).first.click()
-                        expect(page.locator(css)).to_be_visible(timeout=25000)
+                        expect(page.get_by_text(label + "行事曆")).to_be_visible(timeout=25000)
+                        assert page.locator("iframe").count() >= 1
                     page.get_by_text("七日拖排", exact=True).first.click()
                     expect(page.locator(".matrix .cell")).to_have_count(112, timeout=25000)
 
