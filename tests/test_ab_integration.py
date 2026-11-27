@@ -362,7 +362,7 @@ def test_ai_feedback_is_saved_and_only_scheduled_after_user_confirmation(
     assert feedback["ai_analysis"] == analysis
     assert feedback["topic_tags"] == ["函式", "清單"]
     assert load_json(data_path("tasks")) == []
-    assert load_json(data_path("pending_notes"))[0]["stage"] == "ai_task_confirmation"
+    assert load_json(data_path("pending_notes"))[0]["stage"] == "ai_question_confirmation"
 
     response = send_webhook(client, secret, {
         "type": "message",
@@ -380,7 +380,9 @@ def test_ai_feedback_is_saved_and_only_scheduled_after_user_confirmation(
     assert tasks[0]["source_event_id"] == "class-1"
     assert tasks[0]["source_class_date"] == class_date
     assert tasks[0]["deadline"] == (now.date() + timedelta(days=6)).isoformat()
-    assert tasks[0]["estimated_minutes"] == 45
+    assert tasks[0]["estimated_minutes"] == 30
+    assert tasks[0]["deadline_at"]
+    assert tasks[0]["source_question_key"]
     assert tasks[0]["source"] == "ai_confirmed"
     assert not load_json(data_path("plan"))  # 等使用者按綠色偏好一鍵安排
     assert load_json(data_path("pending_notes")) == []
