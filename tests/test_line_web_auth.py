@@ -189,3 +189,15 @@ def test_flask_webhook_app_mounts_login_routes_default_off(setup, monkeypatch):
     assert client.get("/health").status_code == 200
     assert client.get("/auth/line/start", base_url=ORIGIN).status_code == 404
     assert client.get("/auth/line/callback", base_url=ORIGIN).status_code == 404
+
+
+def test_staging_allowlist_revokes_access_for_removed_account(setup, monkeypatch):
+    _, ids = setup
+    monkeypatch.setenv("CLASSPULSE_STAGING_TEST_USERS", A + "," + B)
+    raw, _ = auth.create_session(A, NOW + 100)
+    assert auth.resolve_session(raw) == ids[A]
+    monkeypatch.setenv("CLASSPULSE_STAGING_TEST_USERS", B)
+    with pytest.raises(auth.AuthError):
+        auth.resolve_session(raw)
+    with pytest.raises(auth.AuthError):
+        auth.create_session(A, NOW + 100)
