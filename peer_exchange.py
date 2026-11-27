@@ -98,3 +98,32 @@ def import_profile(raw: bytes) -> dict:
         "claimed_checkin_rate": evidence.get("checkin_rate"),
         "benchmark_verified": False,
     }
+
+
+def combine_profiles(profiles: list[dict]) -> dict:
+    """把 2–12 份自願交換的習慣樣本合成群組訓練模板，不產生排名。"""
+    from statistics import median
+
+    if not 2 <= len(profiles) <= 12:
+        raise PeerProfileError("小組訓練模板需 2–12 份自願分享的 JSON")
+    if any(p.get("source") != "peer_uploaded_unverified"
+           or p.get("benchmark_verified") is not False
+           for p in profiles):
+        raise PeerProfileError("只接受已完成驗證且標記未查證的同儕模板")
+
+    counts = Counter()
+    for profile in profiles:
+        counts.update(set(profile.get("preferred_periods", [])))
+    preferred = [
+        key for key, _ in sorted(counts.items(), key=lambda item: (-item[1], PERIOD_BY_LABEL[item[0]]))
+    ][:5]
+    return {
+        "name": f"匿名小組示範訓練菜單（{len(profiles)} 份）",
+        "sessions_per_week": round(median(p["sessions_per_week"] for p in profiles)),
+        "maximum_blocks": round(median(p["maximum_blocks"] for p in profiles)),
+        "preferred_periods": preferred,
+        "goal": "將多份自願分享的訓練節奏取中位數，按照自己的日曆與 Deadline 個人化",
+        "peer_count": len(profiles),
+        "source": "local_group_profiles_unverified",
+        "benchmark_verified": False,
+    }
