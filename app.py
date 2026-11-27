@@ -85,6 +85,26 @@ except DataError as exc:
     st.error(f"資料載入失敗：{exc}")
     st.stop()
 
+if demo_mode:
+    demo_courses = own(records["events"])
+    demo_tasks = own(records["tasks"])
+    demo_planned = [row for row in own(records["plan"]) if row.get("status") == "scheduled"]
+    demo_pinned_ids = {row["task_id"] for row in demo_planned}
+    demo_waiting = [task for task in demo_tasks
+                    if task.get("status") == "pending"
+                    and task.get("task_id") not in demo_pinned_ids]
+    if len(demo_courses) < 10:
+        st.warning("目前還是舊版精簡展示資料。請按上方「重設展示資料」一次，"
+                   "即可載入含完整課表、待排與預排任務的豐富展示情境；"
+                   "只重設展示資料，不會影響正式使用者。")
+    st.caption(
+        f"虛構展示情境｜{len(demo_courses)} 門每週課程 · "
+        f"{len(demo_waiting)} 項待排 · {len(demo_planned)} 項已排 · "
+        f"{sum(t.get('status') == 'completed' for t in demo_tasks)} 項已完成 · "
+        f"{len(own(records['feedback']))} 則課後回饋 · "
+        f"{len(own(records['external_events']))} 筆外部活動"
+    )
+
 pages = st.tabs(["行事曆與拖排", "操作引導", "LINE 一日 Mock", "任務管理", "總覽與回饋", "Markdown 與 AI"])
 
 with pages[0]:
