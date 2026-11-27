@@ -6,17 +6,10 @@
 
 LINE 課後回饋 → Gemini 分析 → 逐題確認紫色任務 → 七日拖排 → LINE 自動提醒 → 進度回報及局部重排。個人資料由 LINE Login 身份映射；不需每次手動啟動提醒任務。
 
-## 組員與個人貢獻
+## 團隊與版本
 
-| 組員 | 主要分工 |
-| --- | --- |
-| **蕭博軒（A，[@Onlynotonly](https://github.com/Onlynotonly)）** | 資料／Streamlit、產品流程、V2 排程與 AI 任務、LINE 個人化與跨端整合、常駐 Worker、部署維運、回歸與實機測試 |
-| 莊育哲（B，[@joeuser-max](https://github.com/joeuser-max)） | 原始 LINE Webhook、綁定、課後補筆記、附件擷取、提醒、排程與進度回報等後端功能 |
+第 14 組：蕭博軒、莊育哲。
 
-**[個人貢獻明細、PR 與驗收證據 → CONTRIBUTIONS.md](CONTRIBUTIONS.md)**
-
-- [Final 3.0 Golden Baseline](https://github.com/joeuser-max/python-14-studybot/commit/e835140e0658717e1fdda14ab7ec07c7d8554ed3)：本機 `223 passed in 2.04s`，常駐 Worker 8/8、Service Manager 10/10（操作者回報）。
-- [Final 3.0 完整工程紀錄](docs/final-3-0-contribution-and-acceptance.md)
 - [本機一鍵啟動與維運](docs/local-launcher.md)
 - [主線整合與驗收規則](docs/main-integration-plan.md)
 
