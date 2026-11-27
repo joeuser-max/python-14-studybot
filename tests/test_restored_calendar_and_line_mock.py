@@ -14,7 +14,7 @@ def test_calendar_views_keep_day_week_month_without_all_day_standby():
         options = view_options(name)
         assert options["initialView"] == expected
         assert options["allDaySlot"] is False
-        assert options["slotDuration"] == "01:00:00"
+        assert options["slotDuration"] == "00:30:00"
         assert options["slotMinTime"] == "08:00:00"
         assert options["slotMaxTime"] == "24:00:00"
 
