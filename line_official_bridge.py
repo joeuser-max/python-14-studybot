@@ -82,6 +82,28 @@ def handle_personal_note(event):
                      and u.get("line_user_id") == subject), None)
         if user is None:
             return False
+        if kind == "text" and text in ("開啟提醒", "關閉提醒", "提醒狀態"):
+            enabled = os.getenv("CLASSPULSE_FRIEND_AUTO_PUSH") == "1"
+            if text == "開啟提醒" and not enabled:
+                line_bot.reply_line_message(event.get("replyToken", ""), "自動提醒服務尚未啟用。")
+            elif text == "提醒狀態":
+                class_on = user.get("reminders_enabled") is True
+                study_on = user.get("study_reminders_enabled") is True
+                line_bot.reply_line_message(event.get("replyToken", ""),
+                    f"課後提醒：{'開啟' if class_on else '關閉'}；讀書開始/結束提醒：{'開啟' if study_on else '關閉'}。")
+            else:
+                opt_in = text == "開啟提醒"
+                storage.update_json(storage.data_path("users"), lambda rows: [
+                    {**r, "reminders_enabled": opt_in, "study_reminders_enabled": opt_in}
+                    if r.get("user_id") == uid and r.get("line_user_id") == subject else r
+                    for r in rows])
+                line_bot.reply_line_message(event.get("replyToken", ""),
+                    ("已開啟自動提醒：新建立且啟用提醒的課程、已安排的非範例任務、讀書結束回報。"
+                     "若有已儲存的 AI 摘要會一併傳至自己的 LINE，不會額外呼叫 AI。"
+                     "輸入「關閉提醒」可停止推播。" if opt_in else
+                     "已關閉自動課後與讀書提醒；不會刪除筆記、任務或既有排程。"))
+            line_bot._mark_processed(eid, now)
+            return True
         if kind == "text" and os.getenv("CLASSPULSE_FRIEND_PROGRESS_SYNC") == "1":
             from line_personal_progress import handle_progress
             result = handle_progress(event, user, now)
