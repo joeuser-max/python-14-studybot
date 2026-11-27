@@ -1,4 +1,4 @@
-"""Private signed friend-follow acceptance endpoint, never the legacy webhook."""
+"""Signed, isolated friend-demo entry; private by default, optional two-seat internal demo."""
 import json
 import os
 import re
@@ -17,10 +17,14 @@ from line_web_auth import config, install_routes
 def create_app():
     origin, _, _ = config()
     allowed = {v.strip() for v in os.getenv("CLASSPULSE_STAGING_TEST_USERS", "").split(",") if v.strip()}
+    internal = os.getenv("CLASSPULSE_FRIEND_INTERNAL") == "1"
+    # Internal mode removes the per-person ID setup, not LINE identity verification.
+    if internal and os.getenv("CLASSPULSE_STAGING_TEST_USERS") is not None:
+        raise ValueError("Unset tester allowlist for internal mode")
     secret = os.getenv("LINE_CHANNEL_SECRET", "")
     if (os.getenv("CLASSPULSE_FRIEND_E2E") != "1"
             or storage.DATA_DIR != (storage.ROOT / "data" / "friend-e2e").resolve()
-            or not allowed or len(allowed) > 5
+            or (not internal and (not allowed or len(allowed) > 5))
             or any(not re.fullmatch(r"U[0-9a-f]{32}", v) for v in allowed)
             or not secret or not os.getenv("LINE_CHANNEL_ACCESS_TOKEN")):
         raise ValueError("Private friend E2E configuration incomplete")
@@ -55,7 +59,8 @@ def create_app():
             eid = event.get("webhookEventId")
             token = event.get("replyToken")
             if (source.get("type") != "user" or not isinstance(subject, str)
-                    or subject not in allowed or event.get("mode") == "standby"
+                    or not re.fullmatch(r"U[0-9a-f]{32}", subject)
+                    or (not internal and subject not in allowed) or event.get("mode") == "standby"
                     or not isinstance(eid, str) or not eid or len(eid) > 128):
                 continue
             follow = event.get("type") == "follow"
@@ -70,6 +75,13 @@ def create_app():
                        for r in storage.load_json(storage.data_path("processed_webhooks"))):
                     continue
                 if follow:
+                    if internal:
+                        users = storage.load_json(storage.data_path("users"))
+                        if not any(r.get("line_user_id") == subject for r in users) and len(users) >= 2:
+                            if isinstance(token, str) and token:
+                                reply_line_message(token, "目前 ClassPulse 內部展示名額已滿，請聯絡管理者。")
+                            _mark_processed(eid, datetime.now(storage.TZ))
+                            continue
                     user, _ = get_or_create_line_user(subject)
                     seed_line_user(user["user_id"])
                 else:
@@ -80,7 +92,8 @@ def create_app():
                 # No user identifiers or tokens in the URL. Login still verifies identity.
                 if isinstance(token, str) and token:
                     reply_line_message(token, "你的個人 ClassPulse Demo 已建立。請使用外部瀏覽器開啟：\n" + origin
-                                       + "\n目前為私人測試，需輸入測試密碼及 LINE 登入。")
+                                       + ("\n使用 LINE 登入即可開始使用。" if internal else
+                                          "\n目前為私人測試，需輸入測試密碼及 LINE 登入。"))
                 _mark_processed(eid, datetime.now(storage.TZ))
         return {"ok": True}
 
