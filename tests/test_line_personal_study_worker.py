@@ -104,3 +104,27 @@ def test_expired_selection_does_not_send(prepared, monkeypatch):
     selected = worker.sessions(now)[0]
     monkeypatch.setattr(worker, "push_line_message", lambda *a: pytest.fail("unexpected push"))
     assert worker.deliver_once(selected, now+timedelta(minutes=16)) == "invalid"
+
+
+def test_checkin_after_session_end_and_only_once(prepared, monkeypatch):
+    now, uid, _ = prepared
+    messages = []
+    monkeypatch.setattr(worker, "push_line_message", lambda u, r, t: messages.append(t) or True)
+    selected = worker.sessions(now)[0]
+    assert worker.deliver_once(selected, now) == "sent"
+    assert worker.deliver_checkin_once(selected, now+timedelta(minutes=29)) == "waiting"
+    assert worker.deliver_checkin_once(selected, now+timedelta(minutes=30)) == "sent"
+    assert worker.deliver_checkin_once(selected, now+timedelta(minutes=31)) == "sent"
+    assert len(messages) == 2 and "未完成 aiq_test" in messages[-1]
+    row = next(r for r in storage.load_json(storage.data_path("reminders"))
+               if r["kind"] == "study_session_checkin")
+    assert row["user_id"] == uid and row["progress_status"] == "awaiting_response"
+    assert row["session_minutes"] == 30
+
+
+def test_checkin_requires_successful_start_and_expires(prepared, monkeypatch):
+    now, _, _ = prepared
+    selected = worker.sessions(now)[0]
+    monkeypatch.setattr(worker, "push_line_message", lambda *a: pytest.fail("unexpected push"))
+    assert worker.deliver_checkin_once(selected, now+timedelta(minutes=30)) == "invalid"
+    assert worker.deliver_checkin_once(selected, now+timedelta(minutes=46)) == "invalid"
