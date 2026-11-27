@@ -5,7 +5,7 @@
 """
 from __future__ import annotations
 
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, time, timedelta
 from typing import Iterable
 
 from storage import DataError, TZ, data_path, load_json, update_json
