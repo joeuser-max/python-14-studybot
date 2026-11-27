@@ -128,3 +128,65 @@ def test_checkin_requires_successful_start_and_expires(prepared, monkeypatch):
     monkeypatch.setattr(worker, "push_line_message", lambda *a: pytest.fail("unexpected push"))
     assert worker.deliver_checkin_once(selected, now+timedelta(minutes=30)) == "invalid"
     assert worker.deliver_checkin_once(selected, now+timedelta(minutes=46)) == "invalid"
+
+
+def _auto_config(monkeypatch):
+    for key in ("CLASSPULSE_FRIEND_AUTO_PUSH", "CLASSPULSE_FRIEND_CLASS_PUSH",
+                "CLASSPULSE_FRIEND_PROGRESS_SYNC"):
+        monkeypatch.setenv(key, "1")
+
+
+def test_auto_worker_respects_owner_opt_in_and_persisted_start_end(prepared, monkeypatch):
+    import line_personal_auto_worker as auto
+    now, uid, _ = prepared
+    _auto_config(monkeypatch)
+    calls = []
+    monkeypatch.setattr(worker, "push_line_message", lambda u, r, t: calls.append((r["kind"], t)) or True)
+    assert auto.tick(now) == []
+    storage.update_json(storage.data_path("users"), lambda rows: [
+        {**r, "study_reminders_enabled": True} for r in rows])
+    assert auto.tick(now-timedelta(seconds=1)) == []
+    assert auto.tick(now) == [("study", "sent")]
+    assert auto.tick(now+timedelta(minutes=1)) == []
+    assert auto.tick(now+timedelta(minutes=30)) == [("checkin", "sent")]
+    assert auto.tick(now+timedelta(minutes=31)) == []
+    assert [c[0] for c in calls] == ["study_session", "study_session_checkin"]
+    assert "cached summary" in calls[0][1]
+
+
+def test_auto_worker_manual_task_no_model_and_revocation(prepared, monkeypatch):
+    import line_personal_auto_worker as auto
+    import line_study_ai
+    now, uid, _ = prepared
+    _auto_config(monkeypatch)
+    storage.update_json(storage.data_path("users"), lambda rows: [
+        {**r, "study_reminders_enabled": True} for r in rows])
+    storage.update_json(storage.data_path("tasks"), lambda rows: [
+        {**r, "source": "manual", "source_feedback_id": ""} for r in rows])
+    monkeypatch.setattr(line_study_ai, "organize_class_feedback",
+                        lambda *a: pytest.fail("no new API calls"))
+    calls = []
+    monkeypatch.setattr(worker, "push_line_message", lambda u, r, t: calls.append(t) or True)
+    selected = worker.sessions(now, automatic=True)[0]
+    storage.update_json(storage.data_path("users"), lambda rows: [
+        {**r, "study_reminders_enabled": False} for r in rows])
+    assert worker.deliver_once(selected, now, automatic=True) == "invalid"
+    assert auto.tick(now) == [] and not calls
+    storage.update_json(storage.data_path("users"), lambda rows: [
+        {**r, "study_reminders_enabled": True} for r in rows])
+    assert auto.tick(now) == [("study", "sent")]
+    assert len(calls) == 1 and "AI 根據" not in calls[0]
+    storage.update_json(storage.data_path("users"), lambda rows: [
+        {**r, "study_reminders_enabled": False} for r in rows])
+    assert auto.tick(now+timedelta(minutes=30)) == []
+
+
+def test_auto_worker_no_late_start_or_checkin_without_start(prepared, monkeypatch):
+    import line_personal_auto_worker as auto
+    now, _, _ = prepared
+    _auto_config(monkeypatch)
+    storage.update_json(storage.data_path("users"), lambda rows: [
+        {**r, "study_reminders_enabled": True} for r in rows])
+    monkeypatch.setattr(worker, "push_line_message", lambda *a: pytest.fail("unexpected late push"))
+    assert auto.tick(now+timedelta(minutes=30)) == []
+    assert auto.tick(now+timedelta(minutes=60)) == []
