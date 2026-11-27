@@ -24,8 +24,8 @@ from scheduler import _scheduled_start
 WINDOW = timedelta(minutes=15)
 
 
-def require_config():
-    if (os.getenv("CLASSPULSE_FRIEND_STUDY_PUSH") != "1"
+def require_config(flag="CLASSPULSE_FRIEND_STUDY_PUSH"):
+    if (os.getenv(flag) != "1"
             or os.getenv("CLASSPULSE_OFFICIAL_BRIDGE") != "1"
             or os.getenv("CLASSPULSE_FRIEND_INTERNAL") != "1"
             or os.getenv("CLASSPULSE_FRIEND_E2E") != "1"
