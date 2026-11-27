@@ -3,6 +3,7 @@
 **Recorded:** 2026-11-28 (Asia/Taipei)  
 **Development branch:** `feature/line-friend-demo`  
 **Starting point:** Final 1.1 (`feature/final-note-ai-loop-ui-line-e2e`, commit `10b5fc5`)  
+**PR target:** `feature/rich-demo-fixtures` (already includes Final 1.1; existing PR CI workflow is configured on this base)  
 **Owner of local setup and field debugging:** @Onlynotonly
 
 This records the work and diagnostic observations made during the guided
