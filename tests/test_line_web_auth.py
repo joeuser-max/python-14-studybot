@@ -179,3 +179,13 @@ def test_http_origin_or_wrong_host_refused(setup, monkeypatch):
     assert client.get("/auth/line/start", base_url="https://evil.test").status_code == 401
     monkeypatch.setenv("CLASSPULSE_WEB_ORIGIN", "http://classpulse.test")
     assert client.get("/auth/line/start", base_url=ORIGIN).status_code == 401
+
+
+def test_flask_webhook_app_mounts_login_routes_default_off(setup, monkeypatch):
+    import line_bot
+    monkeypatch.delenv("CLASSPULSE_LINE_WEB_STAGING")
+    app = line_bot.create_app()
+    client = app.test_client()
+    assert client.get("/health").status_code == 200
+    assert client.get("/auth/line/start", base_url=ORIGIN).status_code == 404
+    assert client.get("/auth/line/callback", base_url=ORIGIN).status_code == 404
