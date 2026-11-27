@@ -14,7 +14,7 @@ def test_reminder_reservation_keeps_retry_key_and_other_records(monkeypatch, tmp
     ])
     again = worker._reserve_reminder({**first, "retry_key": "new-key"})
     assert again["retry_key"] == "key1"
-    worker._mark_reminder("r1", "sent", "2026-11-23T21:00:00+08:00")
+    worker._mark_reminder("r1", "sent", "2026-11-23T21:00:00+08:00", "u1")
     items = storage.load_json(storage.data_path("reminders"))
     assert len(items) == 2
     assert next(row for row in items if row["reminder_id"] == "r1")["status"] == "sent"
