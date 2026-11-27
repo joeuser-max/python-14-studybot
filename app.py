@@ -25,6 +25,7 @@ from week_board import render_week_board
 from calendar_sync import preview_ics, import_ics, export_week_ics, edit_imported_event
 from study_metrics import personal_metrics, BENCHMARK_TEMPLATES, anonymized_benchmark
 from study_coach import CoachError, coach_with_gemini
+from peer_exchange import PeerProfileError, export_profile, import_profile
 
 USER_ID = "demo_user_001"  # MVP：單一測試使用者；正式多人版須加入登入機制
 WEEKDAYS = {1: "週一", 2: "週二", 3: "週三", 4: "週四", 5: "週五", 6: "週六", 7: "週日"}
@@ -586,9 +587,31 @@ with pages[2]:
         st.caption("現階段提供三種**匿名示範訓練模板**，不代表真實中央大學學生平均值、"
                    "附近的人或已加入的群組。AI 會考慮你已有課程、時間衝突、Deadline 和待排任務；"
                    "不會直接改行事曆。")
-        style_name = st.selectbox("選擇參考訓練型態", list(BENCHMARK_TEMPLATES),
+        st.download_button(
+            "匯出我的匿名訓練模板（JSON）",
+            data=export_profile(board_payload(USER_ID), metric),
+            file_name="classpulse_anonymous_training.json",
+            mime="application/json",
+            key="peer_export_profile",
+            help="只包含每週安排數量、常用節次、單次時長與自填總覽指標；不含課名或個人身分。",
+        )
+        uploaded_training = st.file_uploader(
+            "匯入同學自願分享的訓練模板（JSON）",
+            type=["json"], key="peer_training_upload",
+        )
+        imported_template = None
+        if uploaded_training:
+            try:
+                imported_template = import_profile(uploaded_training.getvalue())
+                st.info("已讀取匿名訓練模板。資料為分享者自行填寫或提供，"
+                        "未經實名驗證，不能作為校內排名或客觀效率證據。")
+            except PeerProfileError as exc:
+                st.error(str(exc))
+        choices = list(BENCHMARK_TEMPLATES) + (["同學分享的模板"] if imported_template else [])
+        style_name = st.selectbox("選擇參考訓練型態", choices,
                                   key="coach_template_style")
-        template = BENCHMARK_TEMPLATES[style_name]
+        template = (imported_template if style_name == "同學分享的模板"
+                    else BENCHMARK_TEMPLATES[style_name])
         st.caption(f"{template['name']}｜每週 {template['sessions_per_week']} 次｜"
                    f"單次最多 {template['maximum_blocks']} 節｜{template['goal']}")
         profile = anonymized_benchmark(metric, template)
