@@ -261,3 +261,87 @@ def test_gemini_consent_names_provider_and_rejects_provider_switch(setup, monkey
     assert "請先輸入" in replies[-1]
     assert storage.load_json(storage.data_path("pending_notes"))[0]["stage"] == "friend_ai_consent"
     assert not forwarded
+
+
+def _prepare_personal_checkin(setup, monkeypatch):
+    from datetime import datetime, timedelta
+    import line_bot
+    monkeypatch.setenv("CLASSPULSE_FRIEND_NOTE_SYNC", "1")
+    monkeypatch.setenv("CLASSPULSE_FRIEND_PROGRESS_SYNC", "1")
+    client, replies, forwarded = setup
+    monkeypatch.setattr(line_bot, "reply_line_message",
+                        lambda token, text, choices=None: replies.append(text))
+    def msg(eid, text):
+        return event(eid, message={"type": "text", "text": text})
+    assert post(client, [msg("open", "開啟網頁")]).status_code == 200
+    uid = users()[0]["user_id"]
+    now = datetime.now(storage.TZ)
+    start = now - timedelta(minutes=31)
+    deadline = (now.date()+timedelta(days=5)).isoformat()
+    target = {"user_id": uid, "task_id": "aiq_progress", "subject": "測試課程",
+              "title": "測試任務", "status": "pending", "deadline": deadline,
+              "estimated_minutes": 30, "preferred_availability_id": ""}
+    other = {**target, "task_id": "other", "title": "固定任務"}
+    slot = {"user_id": uid, "availability_id": "board_aiq_progress",
+            "date": start.date().isoformat(), "start_time": start.strftime("%H:%M"),
+            "available_minutes": 30, "board_generated": True}
+    next_day = (now.date()+timedelta(days=1)).isoformat()
+    other_slot = {**slot, "availability_id": "board_other", "date": next_day, "start_time": "09:00"}
+    plan = {"user_id": uid, "task_id": target["task_id"], "availability_id": slot["availability_id"],
+            "status": "scheduled", "source": "manual",
+            "scheduled_start": start.isoformat(timespec="minutes"), "scheduled_minutes": 30}
+    pinned = {**plan, "task_id": "other", "availability_id": "board_other",
+              "scheduled_start": next_day+"T09:00+08:00"}
+    checkin = {"user_id": uid, "task_id": target["task_id"], "availability_id": slot["availability_id"],
+               "kind": "study_session_checkin", "status": "sent", "reminder_id": "personal-checkin",
+               "personal_study_test": True, "progress_status": "awaiting_response",
+               "session_start": plan["scheduled_start"], "session_minutes": 30}
+    for name, rows in {"tasks":[target,other], "availability":[slot,other_slot],
+                       "plan":[plan,pinned], "reminders":[checkin], "events":[],
+                       "external_events":[]}.items():
+        storage.save_json(storage.data_path(name), rows)
+    return client, replies, forwarded, msg, pinned
+
+
+def test_signed_personal_unfinished_and_replan_preserves_other_task(setup, monkeypatch):
+    client, replies, forwarded, msg, pinned = _prepare_personal_checkin(setup, monkeypatch)
+    assert post(client, [msg("unfinished", "未完成 aiq_progress")]).status_code == 200
+    assert "剩餘 15" in replies[-1]
+    assert post(client, [msg("invalid-minutes", "剩餘 999")]).status_code == 200
+    assert "1 至 240" in replies[-1]
+    assert post(client, [msg("remaining", "剩餘 15")]).status_code == 200
+    target = next(t for t in storage.load_json(storage.data_path("tasks")) if t["task_id"] == "aiq_progress")
+    assert target["estimated_minutes"] == 30 and target["remaining_minutes"] == 15
+    plan = storage.load_json(storage.data_path("plan"))
+    assert pinned in plan
+    assert any(r["task_id"] == "aiq_progress" and r["source"] == "auto" for r in plan)
+    assert storage.load_json(storage.data_path("reminders"))[0]["progress_status"] == "replanned"
+    assert post(client, [msg("remaining", "剩餘 15")]).status_code == 200
+    assert storage.load_json(storage.data_path("plan")) == plan
+    assert not forwarded
+
+
+def test_signed_personal_complete_only_unplaces_target(setup, monkeypatch):
+    client, replies, forwarded, msg, pinned = _prepare_personal_checkin(setup, monkeypatch)
+    assert post(client, [msg("done", "完成 aiq_progress")]).status_code == 200
+    assert storage.load_json(storage.data_path("plan")) == [pinned]
+    target = next(t for t in storage.load_json(storage.data_path("tasks")) if t["task_id"] == "aiq_progress")
+    assert target["status"] == "completed"
+    assert post(client, [msg("done-again", "完成 aiq_progress")]).status_code == 200
+    assert storage.load_json(storage.data_path("plan")) == [pinned]
+    assert not forwarded
+
+
+def test_personal_checkin_does_not_intercept_notes_or_overwrite_moved_plan(setup, monkeypatch):
+    client, replies, forwarded, msg, pinned = _prepare_personal_checkin(setup, monkeypatch)
+    assert post(client, [msg("unfinished", "未完成 aiq_progress")]).status_code == 200
+    assert post(client, [msg("start-note", "補筆記")]).status_code == 200
+    assert "星期" in replies[-1]
+    storage.update_json(storage.data_path("plan"), lambda rows: [
+        {**r, "scheduled_start": "2030-01-01T10:00+08:00"} if r["task_id"] == "aiq_progress" else r
+        for r in rows])
+    saved = storage.load_json(storage.data_path("plan"))
+    assert post(client, [msg("late", "剩餘 15")]).status_code == 200
+    assert "已變更" in replies[-1]
+    assert storage.load_json(storage.data_path("plan")) == saved
+    assert not forwarded
