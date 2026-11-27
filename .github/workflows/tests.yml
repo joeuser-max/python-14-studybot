@@ -1,9 +1,9 @@
 name: ClassPulse tests
 on:
   pull_request:
-    branches: [main]
+    branches: [main, feature/rich-demo-fixtures]
   push:
-    branches: [main]
+    branches: [main, integrate/v2-line-preference-final1]
 jobs:
   pytest:
     runs-on: ubuntu-latest

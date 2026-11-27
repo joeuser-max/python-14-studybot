@@ -13,6 +13,7 @@ from demo_data import mock_learning_suggestions, seed_demo_data
 from calendar_views import overview_events, view_options
 from mock_day import one_day_timeline, recommended_demo_day
 from line_mock_chat import start_chat, choices as mock_chat_choices, advance_chat, step_number
+from note_attachments import attachment_path
 from exporter import export_learning_markdown
 from storage import (
     DataError, TZ, add_availabilities, add_event, add_task_to_storage,
@@ -27,6 +28,7 @@ from week_planner import (
     set_task_blocks, unplace,
 )
 from week_board import render_week_board
+from schedule_preferences import mark_preferences, clear_preferences
 from calendar_sync import preview_ics, import_ics, export_week_ics, edit_imported_event, conflicts_with_existing_plan
 from study_metrics import personal_metrics, BENCHMARK_TEMPLATES, anonymized_benchmark
 from study_coach import CoachError, coach_with_gemini, mock_coach_for_demo
@@ -122,8 +124,10 @@ with pages[0]:
     )
     if calendar_view == "七日拖排":
         st.subheader("七日規劃板")
-        st.caption("左側待排卡片可拖到任意空白節次；拉動右側把手修改工時。一鍵填滿才會自動排其他任務。")
-        action = render_week_board(board_payload(USER_ID, board_now))
+        st.caption("左側卡片可自由拖排；按一鍵安排先進入綠色偏好畫筆，再確認排入。綠色優先而非只能排綠色；已手動固定的任務不會移動。")
+        payload = board_payload(USER_ID, board_now)
+        payload["preference_mode"] = st.session_state.get("classpulse_preference_mode", False)
+        action = render_week_board(payload)
         if action:
             nonce = action.get("nonce")
             if nonce and st.session_state.get("last_board_nonce") != nonce:
@@ -139,11 +143,30 @@ with pages[0]:
                     elif action.get("type") == "unplace":
                         unplace(USER_ID, action["task_id"])
                         st.rerun()
+                    elif action.get("type") == "pref_begin":
+                        st.session_state["classpulse_preference_mode"] = True
+                        st.rerun()
+                    elif action.get("type") == "pref_cancel":
+                        st.session_state["classpulse_preference_mode"] = False
+                        st.rerun()
+                    elif action.get("type") == "pref_clear":
+                        clear_preferences(USER_ID)
+                        st.rerun()
+                    elif action.get("type") == "pref_paint":
+                        mark_preferences(
+                            USER_ID, action.get("cells", []),
+                            action.get("enabled"), board_now,
+                        )
+                        st.rerun()
                     elif action.get("type") == "fill":
                         outcome = fill_remaining(USER_ID, board_now)
+                        hits = sum(int(x.get("preference_hits") or 0) for x in outcome["placed"])
+                        st.session_state["classpulse_preference_mode"] = False
                         st.session_state["week_fill_result"] = (
                             f"本次新增 {len(outcome['placed'])} 項安排、"
-                            f"仍有 {len(outcome['skipped'])} 項無法排入。"
+                            f"{len(outcome['skipped'])} 項無法排入；"
+                            f"新安排命中 {hits} 個偏好節次。"
+                            "綠色不足時會使用其他合法空檔。"
                         )
                         st.rerun()
                     elif action.get("type") == "external_edit":
@@ -478,16 +501,14 @@ with pages[1]:
         st.write(f"目前已排 **{len(board_payload(USER_ID)['scheduled'])}** 項，"
                  f"待排 **{len(board_payload(USER_ID)['tasks'])}** 項。")
     elif current == 3:
-        st.info("只在你按下按鈕時，系統才依 Deadline、時長及衝突規則，"
-                "填入其餘待排任務。手動固定時段不會被重新安排。")
-        if st.button("一鍵填滿剩餘任務", key="guide_fill_remaining"):
-            try:
-                result = fill_remaining(USER_ID)
-                st.success(f"新增 {len(result['placed'])} 個排程；"
-                           f"{len(result['skipped'])} 項仍沒有合適空格。")
-                st.rerun()
-            except (DataError, ValueError) as exc:
-                st.error(str(exc))
+        st.info("此步不直接執行排程：請按下方按鈕啟動綠色偏好畫筆，"
+                "再切換到「行事曆與拖排 → 七日拖排」，自行在合法空格畫綠，"
+                "最後按「確認偏好並一鍵安排」。未畫綠的合法空檔仍可使用，"
+                "任何既有手排都不會被移動。")
+        if st.button("開始設定綠色偏好（尚不自動排程）", key="guide_fill_remaining"):
+            st.session_state["classpulse_preference_mode"] = True
+            st.success("已進入偏好畫筆模式，請回到上方「行事曆與拖排」。")
+            st.rerun()
     else:
         st.info("切換到上方「LINE 一日 Mock」：選擇一天，逐事件查看課程提醒、"
                 "讀書開始及結束回報，還能提交模擬課堂筆記。"
@@ -1017,9 +1038,26 @@ with pages[4]:
     if notes:
         for row in notes:
             with st.expander(
-                f"{row.get('class_date')}｜{course_titles.get(row.get('event_id'), '未知課程')}"
+                f"{row.get('class_date')}｜{course_titles.get(row.get('event_id'), '未分類筆記')}"
             ):
                 st.write(row.get("content", ""))
+                filename = row.get("attachment_filename","")
+                if filename:
+                    st.caption("LINE 附件：" + filename)
+                    if str(filename).lower().endswith(".pdf"):
+                        pdf_path=attachment_path(USER_ID,row["feedback_id"])
+                        if pdf_path.is_file():
+                            st.download_button(
+                                "下載 PDF 原始筆記",
+                                data=pdf_path.read_bytes(),
+                                file_name=filename,
+                                mime="application/pdf",
+                                key="note_pdf_"+row["feedback_id"],
+                            )
+                        else:
+                            st.caption("此筆記有檔名，但原始 PDF 未保存；擷取文字仍在上方。")
+                    else:
+                        st.caption("已保存擷取文字；目前不保存 TXT／DOCX 原檔。")
                 if row.get("progress") is not None:
                     st.caption(f"自評理解進度：{row['progress']}/5")
                 with st.form(f"note_tags_form_{row.get('feedback_id')}"):

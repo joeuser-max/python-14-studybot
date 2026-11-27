@@ -7,6 +7,7 @@ from zoneinfo import ZoneInfo
 import requests
 
 from scheduler import get_due_events, get_due_study_checkins, get_due_study_reminders
+from line_study_ai import study_start_message
 from storage import data_path, load_json, update_json
 
 
@@ -83,6 +84,7 @@ def run_reminder_worker_once(now: datetime | None = None) -> list[dict]:
     availability = load_json(data_path("availability"))
     users = load_json(data_path("users"))
     reminders = load_json(data_path("reminders"))
+    feedbacks = load_json(data_path("feedback"))
 
     due = get_due_events(events, now, reminders)
     due.extend(get_due_study_reminders(tasks, plan, availability, users, now, reminders))
@@ -149,9 +151,7 @@ def run_reminder_worker_once(now: datetime | None = None) -> list[dict]:
             )
         elif reminder["kind"] == "study_session":
             task = task_map.get(reminder["task_id"], {})
-            subject = task.get("subject") or "未指定科目"
-            title = task.get("title") or reminder["task_id"]
-            text = f"讀書時段開始囉！任務：科目「{subject}」，{title}，請開始完成。"
+            text = study_start_message(task, user, feedbacks)
         elif reminder["kind"] == "study_session_checkin":
             task = task_map.get(reminder["task_id"], {})
             task_id = reminder["task_id"]

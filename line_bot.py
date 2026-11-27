@@ -3,6 +3,9 @@ import hashlib
 import hmac
 import json
 import os
+
+from line_note_files import clean_filename, download_line_file, extract_text
+from note_attachments import save_pdf_attachment
 from datetime import date, datetime, timedelta
 from zoneinfo import ZoneInfo
 
@@ -10,8 +13,6 @@ import requests
 from flask import Flask, abort, request
 
 from ai_assistant import AIError, organize_class_feedback
-from plan_bridge import merge_user_plan, normalize_plan_result
-from scheduler import make_plan
 from storage import (
     DataError,
     add_task_to_storage,
@@ -20,6 +21,7 @@ from storage import (
     load_json,
     record_task_progress,
     save_feedback as storage_save_feedback,
+    search_learning_notes,
     update_feedback_analysis,
     update_json,
 )
@@ -172,6 +174,85 @@ def _remove_pending(user_id: str) -> None:
     )
 
 
+def _save_quick_note(event: dict, user_id: str, now: datetime, text: str) -> dict:
+    """LINE-first 快速收件箱：不用重選課次、不猜測筆記科目。
+
+    課程歸屬可到 V2 中控台確認；不自動產生排程或呼叫第三方模型。
+    """
+    note = text.strip()
+    if not 2 <= len(note) <= 50_000:
+        raise DataError("筆記應有 2–50,000 字")
+    feedback = {
+        "feedback_id": create_id("feedback"), "user_id": user_id,
+        "event_id": "inbox", "class_date": now.date().isoformat(),
+        "received_at": now.isoformat(timespec="seconds"),
+        "content": note, "progress": None, "topic_tags": [],
+        "source": "selected", "reminder_id": "",
+        "webhook_event_id": event.get("webhookEventId",""),
+        "attachment_filename": event.get("_attachment_filename", ""),
+    }
+    result = save_feedback(feedback)
+    if result["error"]:
+        raise DataError(result["error"])
+    if result["saved"] and event.get("_attachment_content") is not None:
+        save_pdf_attachment(user_id, feedback["feedback_id"], event["_attachment_content"])
+    return {**result, "feedback_id": feedback["feedback_id"]}
+
+
+def _notes_reply(user_id: str, query: str = "") -> str:
+    all_notes = load_json(data_path("feedback"))
+    # LINE 自然語言查詢須包含筆記全文與主題標籤，不能套用
+    # V2「只依標籤搜尋」的網頁舊邏輯。
+    owned = [n for n in all_notes if n.get("user_id") == user_id]
+    needle = query.strip().casefold()
+    matched = [
+        n for n in owned
+        if not needle or needle in str(n.get("content") or "").casefold()
+        or any(needle in str(tag).casefold() for tag in
+               (n.get("topic_tags") if isinstance(n.get("topic_tags"), list) else []))
+    ]
+    if not matched:
+        return "找不到符合條件的筆記；可以傳送「筆記 內容」、PDF、DOCX 或 TXT 新增。"
+    events = {e.get("event_id"): e.get("title", "課堂") for e in load_json(data_path("events"))
+              if e.get("user_id") == user_id}
+    recent = sorted(matched,key=lambda n:n.get("received_at",""),reverse=True)[:5]
+    sections=[]
+    for item in recent:
+        title=events.get(item.get("event_id"), "未分類筆記")
+        excerpt=" ".join(str(item.get("content") or "").split())[:220]
+        date_text=item.get("class_date") or item.get("received_at","")[:10]
+        sections.append(f"{date_text}｜{title}\n{excerpt}")
+    return "最近筆記" + (f"（搜尋：{query}）" if query else "") + "：\n\n" + "\n\n".join(sections)
+
+
+def _handle_file_event(event: dict, user: dict, now: datetime) -> bool:
+    """Only the verified Webhook may download LINE files (never unsigned URLs)."""
+    reply_token=event.get("replyToken","")
+    message=event.get("message") or {}
+    try:
+        name=clean_filename(message.get("fileName",""))
+        raw=download_line_file(message.get("id",""),message.get("fileSize"))
+        text=extract_text(name,raw)
+    except DataError as exc:
+        reply_line_message(reply_token,str(exc))
+        return True
+    except requests.RequestException:
+        reply_line_message(reply_token,"無法從 LINE 下載檔案，請稍後再傳")
+        return True
+    pending=_pending_for(user["user_id"],now)
+    if pending and pending.get("stage")!="note":
+        reply_line_message(reply_token,"目前正在填寫其他資訊，請完成或輸入「取消」再傳筆記")
+        return True
+    synthetic={
+        **event,
+        "message":{**message,"type":"text","text":text if pending else "筆記 "+text},
+        "_attachment_filename":name,
+    }
+    if name.lower().endswith(".pdf"):
+        synthetic["_attachment_content"]=raw
+    return _handle_text_event(synthetic,user,now) is not False
+
+
 def _mark_processed(webhook_event_id: str, received_at: datetime) -> None:
     record = {
         "webhook_event_id": webhook_event_id,
@@ -291,34 +372,25 @@ def _visual_board_enabled(user_id: str, availability: list[dict]) -> bool:
 
 def _replan_user_tasks(user_id: str, now: datetime,
                        changed_task_id: str = "") -> list[dict]:
-    tasks = load_json(data_path("tasks"))
-    availability = load_json(data_path("availability"))
-    previous_plan = load_json(data_path("plan"))
-    own_tasks = [row for row in tasks if row.get("user_id") == user_id]
-    own_slots = [row for row in availability if row.get("user_id") == user_id]
-    own_plan = [row for row in previous_plan if row.get("user_id") == user_id]
-    if _visual_board_enabled(user_id, availability):
-        # 七日規劃板只在明確按「一鍵填滿」時排程。LINE 進度回報不得重排其他項。
-        if changed_task_id:
-            update_json(data_path("plan"), lambda rows: [
-                row for row in rows
-                if not (row.get("user_id") == user_id
-                        and row.get("task_id") == changed_task_id)
-            ])
-            update_json(data_path("availability"), lambda rows: [
-                row for row in rows
-                if not (row.get("user_id") == user_id
-                        and row.get("availability_id") == "board_" + changed_task_id)
-            ])
-        return [row for row in own_plan if row.get("task_id") != changed_task_id]
-    # 相容原先單純可用時段的 Legacy 排程與其測試。
-    plan_result = make_plan(own_tasks, own_slots, own_plan, now)
-    new_plan = normalize_plan_result(plan_result, user_id)
-    update_json(
-        data_path("plan"),
-        lambda rows: merge_user_plan(rows, user_id, new_plan),
+    """V2-only：LINE 回報時只調整被回報的任務。
+
+    不使用 legacy make_plan 全表重排；無論有沒有 board_generated
+    既有時段，都不得把其他任務移動。
+    """
+    if not changed_task_id:
+        return [row for row in load_json(data_path("plan"))
+                if row.get("user_id") == user_id]
+    from week_planner import unplace, fill_remaining
+    unplace(user_id, changed_task_id)
+    task = next(
+        (row for row in load_json(data_path("tasks"))
+         if row.get("user_id") == user_id and row.get("task_id") == changed_task_id),
+        None,
     )
-    return new_plan
+    if task and task.get("status") == "pending":
+        outcome = fill_remaining(user_id, now, only_task_ids={changed_task_id})
+        return outcome["placed"]
+    return []
 
 
 def _handle_study_checkin(event: dict, user: dict) -> bool | None:
@@ -507,25 +579,9 @@ def _schedule_confirmed_ai_task(
         add_task_to_storage(task)
         tasks = load_json(data_path("tasks"))
 
-    slots = load_json(data_path("availability"))
-    previous_plan = load_json(data_path("plan"))
-    own_tasks = [row for row in tasks if row.get("user_id") == user_id]
-    own_slots = [row for row in slots if row.get("user_id") == user_id]
-    own_plan = [row for row in previous_plan if row.get("user_id") == user_id]
-    if _visual_board_enabled(user_id, slots):
-        # LINE AI 核准只新增待排任務，不在未按自動填滿前變動其他課表。
-        return task, {}
-    plan_result = make_plan(own_tasks, own_slots, own_plan, now)
-    new_plan = normalize_plan_result(plan_result, user_id)
-    update_json(
-        data_path("plan"),
-        lambda rows: merge_user_plan(rows, user_id, new_plan),
-    )
-    task_plan = next(
-        (row for row in new_plan if row.get("task_id") == task["task_id"]),
-        {},
-    )
-    return task, task_plan
+    # LINE 接受 AI 建議只建立待排任務；V2 的拖排／偏好畫筆
+    # 必須由使用者在 Streamlit 中控台明確確認。
+    return task, {}
 
 
 def _format_class_feedback_analysis(analysis: dict, progress: int) -> str:
@@ -553,6 +609,27 @@ def _handle_text_event(event: dict, user: dict, now: datetime) -> bool | None:
     if checkin_result is not None:
         return checkin_result
     pending = _pending_for(user_id, now)
+
+    # LINE-first 直接操作：查筆記與臨時筆記可略過逐欄課次引導。
+    # 仍保存來源，不把未確認的文本推定成正式課程。
+    if not pending and text in {"查看筆記", "我的筆記"}:
+        reply_line_message(reply_token, _notes_reply(user_id))
+        return
+    if not pending and text.startswith("搜尋 "):
+        reply_line_message(reply_token, _notes_reply(user_id, text[3:].strip()))
+        return
+    if not pending and text.startswith("筆記 "):
+        try:
+            saved = _save_quick_note(event,user_id,now,text[3:])
+        except DataError as exc:
+            reply_line_message(reply_token, f"筆記尚未保存：{exc}")
+            return False
+        if saved["deduplicated"]:
+            reply_line_message(reply_token,"這則筆記已存在，未重複儲存")
+        else:
+            reply_line_message(reply_token,"已存入 ClassPulse 未分類筆記庫。"
+                "稍後可在網頁歸檔；目前不會自動覆寫日曆或產生讀書任務。")
+        return
 
     if text == "取消":
         if pending:
@@ -719,6 +796,7 @@ def _handle_text_event(event: dict, user: dict, now: datetime) -> bool | None:
             "topic_tags": [],
             "source": "selected",
             "webhook_event_id": event.get("webhookEventId", ""),
+            "attachment_filename": event.get("_attachment_filename",""),
         }
         result = save_feedback(feedback)
         if result["error"]:
@@ -728,6 +806,13 @@ def _handle_text_event(event: dict, user: dict, now: datetime) -> bool | None:
         if result["deduplicated"]:
             reply_line_message(reply_token, "這則回饋已存在，未重複儲存。")
             return
+        if event.get("_attachment_content") is not None:
+            try:
+                save_pdf_attachment(user_id,feedback["feedback_id"],event["_attachment_content"])
+            except DataError as exc:
+                reply_line_message(reply_token,
+                    f"筆記文字已保存，但 PDF 原檔保存失敗：{exc}")
+                return
         if user.get("ai_after_class_enabled") is not True:
             reply_line_message(reply_token, "筆記與自評進度已儲存。")
             return
@@ -820,9 +905,13 @@ def _process_event(event: dict, now: datetime) -> None:
     users = load_json(data_path("users"))
     user = next((row for row in users if row.get("line_user_id") == line_user_id), None)
     if user:
-        if event.get("type") == "message" and message.get("type") == "text":
-            if _handle_text_event(event, user, now) is False:
-                return
+        if event.get("type") == "message":
+            if message.get("type") == "text":
+                if _handle_text_event(event, user, now) is False:
+                    return
+            elif message.get("type") == "file":
+                if _handle_file_event(event, user, now) is False:
+                    return
     elif event.get("type") == "follow":
         reply_line_message(
             reply_token,

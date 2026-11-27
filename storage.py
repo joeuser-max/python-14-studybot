@@ -29,6 +29,7 @@ FILES = {
     "feedback": "feedback.json", "pending_notes": "pending_notes.json",
     "processed_webhooks": "processed_webhooks.json",
     "external_events": "external_events.json",
+    "preference_targets": "preference_targets.json",
 }
 TZ = ZoneInfo("Asia/Taipei")
 

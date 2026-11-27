@@ -374,14 +374,15 @@ def test_ai_feedback_is_saved_and_only_scheduled_after_user_confirmation(
     assert response.status_code == 200
     tasks = load_json(data_path("tasks"))
     plan = load_json(data_path("plan"))
-    assert len(tasks) == len(plan) == 1
+    # V2 修正：LINE 接受建議只放入待排盒，不能直接啟動舊版全表排程。
+    assert len(tasks) == 1 and plan == []
     assert tasks[0]["source_feedback_id"] == feedback["feedback_id"]
     assert tasks[0]["source_event_id"] == "class-1"
     assert tasks[0]["source_class_date"] == class_date
     assert tasks[0]["deadline"] == (now.date() + timedelta(days=6)).isoformat()
     assert tasks[0]["estimated_minutes"] == 45
-    assert plan[0]["status"] == "scheduled"
-    assert plan[0]["availability_id"] == "slot-1"
+    assert tasks[0]["source"] == "ai_confirmed"
+    assert not load_json(data_path("plan"))  # 等使用者按綠色偏好一鍵安排
     assert load_json(data_path("pending_notes")) == []
     duplicate = send_webhook(client, secret, {
         "type": "message",
@@ -568,7 +569,8 @@ def test_study_checkin_records_completion_and_replans_only_remaining_minutes(
     assert updated_task["estimated_minutes"] == 30
     assert updated_task["remaining_minutes"] == 45
     assert updated_task["preferred_availability_id"] == ""
-    assert updated_plan["availability_id"] == "future-slot"
+    # V2 局部重排建立自己的 board slot，不占用組員舊版勾選 slot。
+    assert updated_plan["availability_id"] == "board_task-progress"
     assert updated_plan["status"] == "scheduled"
     assert checkin["progress_status"] == "replanned"
     assert checkin["remaining_minutes"] == 45

@@ -187,7 +187,8 @@ def unplace(user_id: str, task_id: str) -> None:
     ])
 
 
-def fill_remaining(user_id: str, now: datetime | None = None) -> dict:
+def fill_remaining(user_id: str, now: datetime | None = None,
+                   only_task_ids: set[str] | None = None) -> dict:
     """一鍵填滿：只處理未排入任務，依 Deadline→較長工時優先，再找最早連續空格。
 
     手動安排與既有有效排程不會移動；每個任務為單一連續區塊。
@@ -212,7 +213,11 @@ def fill_remaining(user_id: str, now: datetime | None = None) -> dict:
         task for task in records["tasks"]
         if task.get("user_id") == user_id and task.get("status") == "pending"
         and task.get("task_id") not in planned
+        and (only_task_ids is None or task.get("task_id") in only_task_ids)
     ), key=lambda t: (t["deadline"], -int(t.get("remaining_minutes") or t["estimated_minutes"]), t["task_id"]))
+    # 新規格：偏好綠格是軟目標，絕不可把未塗綠的合法時段排除。
+    from schedule_preferences import available_preference_cells, preference_overlap
+    targets = available_preference_cells(user_id, now, records)
     placed, skipped = [], []
     for task in remaining:
         minutes = int(task.get("remaining_minutes") or task["estimated_minutes"])
@@ -220,23 +225,35 @@ def fill_remaining(user_id: str, now: datetime | None = None) -> dict:
         if blocks > MAX_BLOCKS:
             skipped.append((task["task_id"], "超過單次四節上限，請拆成較小任務"))
             continue
-        match = None
+        choices = []
         for day in rolling_dates(now):
             if day > date.fromisoformat(task["deadline"]):
                 break
-            for label, _ in PERIODS:
+            for label, hour in PERIODS:
                 try:
                     start, end = _candidate(task, day, label, blocks, records, now, user_id)
                 except DataError:
                     continue
-                match = (day, label, start, end)
-                break
-            if match:
-                break
+                preferred = preference_overlap(start, end, targets)
+                # Consider workload already scheduled that day, not class hours.
+                day_workload = 0
+                slots = {x["availability_id"]: x for x in records["availability"]}
+                for row in records["plan"]:
+                    if (row.get("user_id") != user_id or row.get("status") != "scheduled"
+                            or row.get("availability_id") not in slots):
+                        continue
+                    begin, finish = _slot_interval(slots[row["availability_id"]], row)
+                    if begin.date() == day:
+                        day_workload += (finish - begin).total_seconds() / 60
+                # Soft optimization: green hit first; balance day workloads
+                # and then prefer earlier available legal starts.
+                score = (-preferred, day_workload, (day - now.date()).days, hour)
+                choices.append((score, day, label, start, end, preferred))
+        match = min(choices, key=lambda row: row[0]) if choices else None
         if not match:
             skipped.append((task["task_id"], "七日內沒有連續且不衝突的時段"))
             continue
-        day, label, start, end = match
+        _, day, label, start, end, green_hits = match
         slot_id = f"board_{task['task_id']}"
         slot = {
             "availability_id": slot_id, "user_id": user_id,
@@ -245,7 +262,10 @@ def fill_remaining(user_id: str, now: datetime | None = None) -> dict:
         }
         entry = {
             "task_id": task["task_id"], "user_id": user_id, "availability_id": slot_id,
-            "status": "scheduled", "source": "auto", "reason": "",
+            "status": "scheduled", "source": "auto",
+            "reason": (f"偏好命中 {green_hits}/{blocks} 節"
+                       if green_hits else "已採用其他合法空檔（偏好並非硬限制）"),
+            "preference_hits": green_hits, "preference_blocks": blocks,
             "scheduled_start": start.isoformat(timespec="minutes"),
             "scheduled_minutes": blocks * 60, "unscheduled_alerted": False,
         }
@@ -305,6 +325,8 @@ def board_payload(user_id: str, now: datetime | None = None) -> dict:
             "source": entry.get("source", "auto"),
         })
     external = [e for e in records["external_events"] if e.get("user_id") == user_id]
+    from schedule_preferences import available_preference_cells
+    visible_targets = available_preference_cells(user_id, now, records)
     return {
         "days": [{"date": d.isoformat(), "label": "週" + "一二三四五六日"[d.weekday()],
                   "day_number": d.strftime("%m/%d")} for d in rolling_dates(now)],
@@ -319,5 +341,7 @@ def board_payload(user_id: str, now: datetime | None = None) -> dict:
                      "end": c["end_time"], "title": c["title"]}
                     for c in records["events"] if c.get("user_id") == user_id],
         "external": external,
+        "preferences": [{"date": day, "period": label}
+                        for day, label in sorted(visible_targets)],
         "today": now.date().isoformat(), "now_hour": now.hour, "now_iso": now.isoformat(),
     }
