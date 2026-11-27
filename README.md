@@ -1,4 +1,39 @@
-# ClassPulse｜A／B 整合版操作手冊
+# ClassPulse｜第 14 組 — 主動式學習回饋與規劃助手
+
+> **Final 3.0：已完成本機內部展示驗收；本分支正在進行 main 整合審查，尚未宣稱主線驗收完成。**
+
+## 產品功能
+
+LINE 課後回饋 → Gemini 分析 → 逐題確認紫色任務 → 七日拖排 → LINE 自動提醒 → 進度回報及局部重排。個人資料由 LINE Login 身份映射；不需每次手動啟動提醒任務。
+
+## 組員與個人貢獻
+
+| 組員 | 主要分工 |
+| --- | --- |
+| **蕭博軒（A，[@Onlynotonly](https://github.com/Onlynotonly)）** | 資料／Streamlit、產品流程、V2 排程與 AI 任務、LINE 個人化與跨端整合、常駐 Worker、部署維運、回歸與實機測試 |
+| 莊育哲（B，[@joeuser-max](https://github.com/joeuser-max)） | 原始 LINE Webhook、綁定、課後補筆記、附件擷取、提醒、排程與進度回報等後端功能 |
+
+**[個人貢獻明細、PR 與驗收證據 → CONTRIBUTIONS.md](CONTRIBUTIONS.md)**
+
+- [Final 3.0 Golden Baseline](https://github.com/joeuser-max/python-14-studybot/commit/e835140e0658717e1fdda14ab7ec07c7d8554ed3)：本機 `223 passed in 2.04s`，常駐 Worker 8/8、Service Manager 10/10（操作者回報）。
+- [Final 3.0 完整工程紀錄](docs/final-3-0-contribution-and-acceptance.md)
+- [本機一鍵啟動與維運](docs/local-launcher.md)
+- [主線整合與驗收規則](docs/main-integration-plan.md)
+
+### 啟動已設定好的 macOS 內部展示服務
+
+```bash
+bash classpulse.sh start
+```
+
+既有 staging 環境、原始 Flask 5000 及現有 HTTPS Tunnel 為前置條件。另一個 Terminal 可使用 `bash classpulse.sh status`、`bash classpulse.sh logs worker`、`bash classpulse.sh stop`。第一次設定請閱讀維運手冊；不要將 Token、環境檔或個人資料提交至 GitHub。公開部署、雙帳號實機及新 Tunnel 模式尚未驗收。
+
+---
+
+## 歷史操作手冊（Final 1.1 與原始 A/B MVP）
+
+以下保留原有操作與歷史證據；舊的單人／Mock 限制適用於當時版本，不代表 Final 3.0 完全相同。真實展示以本頁頂部及 local-launcher 手冊為準。
+
 
 **Final 1.1（Draft PR #18）：**[筆記 → 每個疑問 → 人工逐項確認 → 紫色 30 分鐘任務 → 可排程](https://github.com/joeuser-max/python-14-studybot/pull/18)。AI 筆記候選位於「任務管理」；來源課程直接決定科目與「下次上課開始前」分鐘級 Deadline。已排任務可拖動底部把手（30 分鐘步進），觸發衝突時不覆蓋既有時段。日／週／月與七日板同步支援半小時；保留 V2 原有 16 節的標籤。此版仍為本機單使用者 MVP，尚未合併 main。
 
