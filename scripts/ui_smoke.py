@@ -65,7 +65,17 @@ def main():
                     # The guided route and LINE mock must be discoverable as tabs.
                     page.get_by_role("tab", name="操作引導").click()
                     expect(page.get_by_text("引導式操作｜從課表到 AI 建議")).to_be_visible()
+                    # Step 4 must launch the preference painting phase, not run
+                    # the old direct greedy fill behind the user's back.
+                    for _ in range(3):
+                        page.get_by_role("button", name="下一步").click()
+                    expect(page.get_by_role("button", name="開始設定綠色偏好（尚不自動排程）")).to_be_visible()
+                    page.get_by_role("button", name="開始設定綠色偏好（尚不自動排程）").click()
                     page.get_by_role("tab", name="行事曆與拖排").click()
+                    expect(page.get_by_role("button", name="確認偏好並一鍵安排")).to_be_visible()
+                    expect(page.locator(".cards .card")).to_have_count(8, timeout=25000)
+                    page.get_by_role("button", name="保留偏好，暫不排程").click()
+                    expect(page.get_by_role("button", name="一鍵安排：標記綠色偏好")).to_be_visible()
 
                     # Demo starts as a populated timetable, with both pre-planned and still draggable work.
                     page.get_by_text("展示模式（使用獨立的範例資料）", exact=False).click()
