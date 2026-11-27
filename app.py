@@ -765,7 +765,7 @@ with pages[3]:
     else:
         if question_candidates:
             consent_question_ai=st.checkbox(
-                "同意本次將待釐清問題和來源科目傳送至 OpenAI，產生每題一個複習行動",
+                "同意本次將待釐清問題、來源科目與少量筆記摘錄傳至 OpenAI，逐題產生複習行動",
                 key="question_ai_consent",value=False,
             )
             if st.button("讓 OpenAI 逐項生成複習行動",
