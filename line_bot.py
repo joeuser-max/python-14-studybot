@@ -958,6 +958,11 @@ def _process_event(event: dict, now: datetime) -> None:
 
     source = event.get("source", {})
     line_user_id = source.get("userId", "")
+    # Never process private notes or binding commands in group/room contexts.
+    # Missing source.type is retained for the legacy signed test contract.
+    if source.get("type") not in (None, "user") or event.get("mode") == "standby":
+        _mark_processed(webhook_event_id, now)
+        return
     if event.get("type") == "follow" and os.getenv("LINE_FRIEND_DEMO_ENABLED") == "1":
         # No account creation from group/room or standby events.
         if (source.get("type") == "user" and event.get("mode") != "standby"
