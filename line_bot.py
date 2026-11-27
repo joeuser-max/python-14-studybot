@@ -374,19 +374,21 @@ def _replan_user_tasks(user_id: str, now: datetime,
     own_slots = [row for row in availability if row.get("user_id") == user_id]
     own_plan = [row for row in previous_plan if row.get("user_id") == user_id]
     if _visual_board_enabled(user_id, availability):
-        # 七日規劃板只在明確按「一鍵填滿」時排程。LINE 進度回報不得重排其他項。
-        if changed_task_id:
-            update_json(data_path("plan"), lambda rows: [
-                row for row in rows
-                if not (row.get("user_id") == user_id
-                        and row.get("task_id") == changed_task_id)
-            ])
-            update_json(data_path("availability"), lambda rows: [
-                row for row in rows
-                if not (row.get("user_id") == user_id
-                        and row.get("availability_id") == "board_" + changed_task_id)
-            ])
-        return [row for row in own_plan if row.get("task_id") != changed_task_id]
+        # 使用者在 LINE 明確回報「剩餘分鐘」才安排該一項任務。
+        # 既有的其他手排與自動排程全部保持原位。
+        if not changed_task_id:
+            return own_plan
+        from week_planner import unplace, fill_remaining
+        unplace(user_id, changed_task_id)
+        changed = next(
+            (t for t in load_json(data_path("tasks"))
+             if t.get("user_id") == user_id and t.get("task_id") == changed_task_id),
+            None,
+        )
+        if changed and changed.get("status") == "pending":
+            result = fill_remaining(user_id, now, only_task_ids={changed_task_id})
+            return result["placed"]
+        return []
     # 相容原先單純可用時段的 Legacy 排程與其測試。
     plan_result = make_plan(own_tasks, own_slots, own_plan, now)
     new_plan = normalize_plan_result(plan_result, user_id)
