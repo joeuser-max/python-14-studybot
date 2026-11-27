@@ -397,16 +397,18 @@ def update_task_status(tasks: list, task_id: str, status: str) -> list:
 
 def set_task_status(task_id: str, status: str, user_id: str) -> list:
     """Persist status changes only for a server-resolved owner."""
-    return update_json(data_path("tasks"), lambda items: [
-        {**row, "status": status} if row.get("task_id") == task_id and row.get("user_id") == user_id else row
-        for row in items
-    ] if status in ("pending", "completed") and user_id and any(
-        row.get("task_id") == task_id and row.get("user_id") == user_id for row in items
-    ) else _reject_task_status())
+    if not user_id or status not in ("pending", "completed"):
+        raise DataError("任務狀態或所有者不正確")
 
-
-def _reject_task_status():
-    raise DataError("任務狀態不正確或找不到指定任務")
+    def change(items):
+        if not any(row.get("task_id") == task_id and row.get("user_id") == user_id for row in items):
+            raise DataError("找不到指定任務")
+        return [
+            {**row, "status": status}
+            if row.get("task_id") == task_id and row.get("user_id") == user_id else row
+            for row in items
+        ]
+    return update_json(data_path("tasks"), change)
 
 
 def validate_feedback(feedback: dict) -> dict:
