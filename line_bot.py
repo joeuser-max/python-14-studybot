@@ -616,9 +616,10 @@ def _handle_text_event(event: dict, user: dict, now: datetime) -> bool | None:
     text = text.strip() if isinstance(text, str) else ""
     reply_token = event.get("replyToken", "")
     user_id = user["user_id"]
-    checkin_result = _handle_study_checkin(event, user)
-    if checkin_result is not None:
-        return checkin_result
+    if not user.get("_personal_note_only"):
+        checkin_result = _handle_study_checkin(event, user)
+        if checkin_result is not None:
+            return checkin_result
     pending = _pending_for(user_id, now)
 
     # LINE-first 直接操作：查筆記與臨時筆記可略過逐欄課次引導。
