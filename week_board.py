@@ -7,12 +7,16 @@ HTML = """
   <aside class="deck"><header><strong>待排任務</strong><small class="count"></small></header>
     <small>拖曳至右側空格，卡片右側把手可橫向調整 1–4 節。也可點卡片後再點目標格。</small>
     <section class="cards"></section>
-    <button class="autofill">一鍵填滿剩餘任務</button>
-    <small>只有按下此鍵才會安排其餘任務；手動安排不受影響。</small>
+    <button class="autofill">一鍵安排剩餘任務</button>
+    <div class="preference-controls">
+      <button class="pref-clear" type="button">清除全部綠色偏好</button>
+      <button class="pref-cancel" type="button">保留偏好，暫不排程</button>
+    </div>
+    <small class="pref-hint">點一鍵安排後，在空白格點選或拖曳畫綠，再確認排入。</small>
   </aside>
   <main class="board"><header><strong>未來七日 · 16 節</strong><small>T+0 至 T+6，沒有過去日期</small></header>
     <div class="matrix"></div>
-    <footer>紅：固定課程　黃：外部行事曆（點擊編輯）　藍：已排任務（× 移回待排）</footer>
+    <footer>紅：固定課程　黃：外部活動　藍：已排任務　綠：可用且偏好的時段；其他空白仍可排</footer>
   </main>
 </div>
 """
@@ -34,6 +38,10 @@ display:flex;align-items:center;justify-content:space-between;gap:4px;overflow:h
 border-left:2px dashed #577fca;border-right:2px dashed #577fca}
 .autofill{width:100%;background:#265ec7;color:white;border:0;border-radius:7px;
 padding:9px;margin:10px 0 4px;font-size:12px;font-weight:bold;cursor:pointer}
+.preference-controls{display:flex;flex-direction:column;gap:4px}
+.pref-clear,.pref-cancel{border:1px solid #8da2b8;border-radius:5px;padding:6px;
+background:#fff;color:#31455e;cursor:pointer;font-size:11px;display:none}
+.pref-hint{display:block;margin-top:4px}
 .matrix{display:grid;grid-template-columns:52px repeat(7,minmax(0,1fr));
 grid-template-rows:37px repeat(16,32px);border-top:1px solid #dbe1e9;
 border-left:1px solid #dbe1e9;position:relative}
@@ -44,7 +52,9 @@ display:flex;align-items:center;justify-content:center;flex-direction:column}
 .period{background:#f7f9fc;display:flex;align-items:center;justify-content:center;
 gap:4px;font-size:10px}
 .period b{font-size:12px}
-.cell{background:#fff;cursor:copy}
+.cell{background:#fff;cursor:copy;touch-action:pan-y}
+.cell.preferred{background:#b9e4ce;box-shadow:inset 0 0 0 1px #23845b}
+.cell.paintable{cursor:crosshair}
 .cell.past{background:#eff1f4;cursor:not-allowed}
 .cell.over{background:#d6e8ff}
 .event{position:relative;z-index:3;border-radius:4px;margin:1px;padding:3px;
@@ -73,11 +83,25 @@ export default function(component) {
   deck.replaceChildren();
   const days=data.days||[], periods=data.periods||[], tasks=data.tasks||[];
   let dragged=null, selected=null, handledDrop=false;
+  const preferenceMode=Boolean(data.preference_mode);
+  const preferenceSet=new Set((data.preferences||[]).map(p=>p.date+"|"+p.period));
+  let painting=false,paintDesired=true,paintMap=new Map();
   const send=(v)=>setTriggerValue("action",JSON.stringify({...v,nonce:Date.now()+"-"+Math.random()}));
   const cell=(cls,txt)=>{const el=document.createElement("div");el.className=cls;el.textContent=String(txt||"");return el;};
   const pos=(el,col,row,span=1)=>{el.style.gridColumn=String(col);el.style.gridRow=row+" / span "+span;matrix.append(el);};
   root.querySelector(".count").textContent=tasks.length+" 項";
-  root.querySelector(".autofill").onclick=()=>send({type:"fill"});
+  const fillButton=root.querySelector(".autofill");
+  fillButton.textContent=preferenceMode?"確認偏好並一鍵安排":"一鍵安排：標記綠色偏好";
+  fillButton.onclick=()=>send({type:preferenceMode?"fill":"pref_begin"});
+  const clearButton=root.querySelector(".pref-clear");
+  const cancelButton=root.querySelector(".pref-cancel");
+  clearButton.style.display=preferenceMode?"block":"none";
+  cancelButton.style.display=preferenceMode?"block":"none";
+  clearButton.onclick=()=>send({type:"pref_clear"});
+  cancelButton.onclick=()=>send({type:"pref_cancel"});
+  root.querySelector(".pref-hint").textContent=preferenceMode
+    ?"點選／拖曳空格標綠，再確認安排；其他空檔仍可後備使用。"
+    :"只有準備一鍵安排時才進入畫筆；偏好會保留直到你修改或清除。";
   if(tasks.length===0)deck.append(cell("empty","目前沒有待排任務"));
   tasks.forEach(t=>{
     let blocks=Number(t.blocks)||1;
@@ -128,13 +152,16 @@ export default function(component) {
     pos(cell("period",p.label+"  "+String(p.hour).padStart(2,"0")+":00"),1,k+2);
     days.forEach((d,i)=>{
       const past=(d.date+"T"+String(p.hour).padStart(2,"0")+":00")<=data.now_iso.slice(0,16);
-      const c=cell("cell"+(past?" past":""),"");
+      const key=d.date+"|"+p.label;
+      const c=cell("cell"+(past?" past":"")+
+        (preferenceSet.has(key)?" preferred":"")+
+        (preferenceMode&&!past?" paintable":""),"");
       c.title=d.date+" "+p.time;
       c.dataset.date=d.date;c.dataset.period=p.label;
-      c.ondragover=(e)=>{if(!past){e.preventDefault();c.classList.add("over");}};
+      c.ondragover=(e)=>{if(!past&&!preferenceMode){e.preventDefault();c.classList.add("over");}};
       c.ondragleave=()=>c.classList.remove("over");
       c.ondrop=(e)=>{e.preventDefault();c.classList.remove("over");
-        if(past)return;
+        if(past||preferenceMode)return;
         const transferred=e.dataTransfer.getData("text/plain");
         const transferBlocks=Number(e.dataTransfer.getData("application/x-classpulse-blocks"));
         const actualTask=transferred || (dragged&&dragged.task_id);
@@ -143,10 +170,37 @@ export default function(component) {
         if(actualTask){handledDrop=true;
           send({type:"drop",task_id:actualTask,date:d.date,period:p.label,blocks:actualBlocks});}
       };
-      c.onclick=()=>{if(!past&&selected)send({type:"drop",task_id:selected.task_id,date:d.date,period:p.label,blocks:selected.blocks});};
+      c.onclick=()=>{if(!past&&!preferenceMode&&selected)send({type:"drop",task_id:selected.task_id,date:d.date,period:p.label,blocks:selected.blocks});};
+      if(preferenceMode&&!past){
+        c.onpointerdown=(e)=>{
+          if(e.button!==0&&e.pointerType!=="touch")return;
+          e.preventDefault();painting=true;paintMap=new Map();
+          paintDesired=!preferenceSet.has(key);
+          paintMap.set(key,{date:d.date,period:p.label});
+          c.classList.toggle("preferred",paintDesired);
+        };
+      }
       pos(c,i+2,k+2);
     });
   });
+  if(preferenceMode){
+    root.onpointermove=(e)=>{
+      if(!painting)return;
+      const target=document.elementFromPoint(e.clientX,e.clientY);
+      const c=target&&target.closest(".cell.paintable");
+      if(!c||!root.contains(c))return;
+      const key=c.dataset.date+"|"+c.dataset.period;
+      paintMap.set(key,{date:c.dataset.date,period:c.dataset.period});
+      c.classList.toggle("preferred",paintDesired);
+    };
+    root.onpointerup=()=>{
+      if(!painting)return;
+      painting=false;
+      if(paintMap.size)send({type:"pref_paint",cells:[...paintMap.values()],enabled:paintDesired});
+      paintMap=new Map();
+    };
+    root.onpointercancel=()=>{painting=false;paintMap=new Map();};
+  }
   const event=(day,startHour,endHour,text,kind,meta={})=>{
     const idx=days.findIndex(d=>d.date===day);if(idx<0)return;
     const from=Math.max(8,Math.min(24,startHour)),to=Math.max(8,Math.min(24,endHour));
