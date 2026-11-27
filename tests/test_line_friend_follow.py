@@ -166,3 +166,20 @@ def test_seed_flag_alone_does_not_enable_registration(setup, monkeypatch):
     assert post(client, event("off-seed")).status_code == 200
     assert users() == []
     assert "綁定" in replies[-1]
+
+
+def test_group_messages_cannot_access_legacy_notes_or_binding(setup, monkeypatch):
+    client, replies = setup
+    storage.save_json(storage.data_path("users"), [
+        {"user_id": "demo_user_001", "line_user_id": "U_friend_A"}])
+    def unexpected(*args, **kwargs):
+        pytest.fail("group context must not process private messages")
+    monkeypatch.setattr(line_bot, "_handle_text_event", unexpected)
+    monkeypatch.setattr(line_bot, "_handle_file_event", unexpected)
+    monkeypatch.setattr(line_bot, "_bind_demo_user", unexpected)
+    for index, msg in enumerate([{"type": "text", "text": "筆記 private"},
+                                 {"type": "text", "text": "綁定 test-code"},
+                                 {"type": "file", "id": "fake"}]):
+        assert post(client, event(f"group-{index}", kind="message",
+                                  source_type="group", message=msg)).status_code == 200
+    assert replies == []
