@@ -1,11 +1,14 @@
 """ClassPulse Streamlit 前端（蕭博軒）。執行：streamlit run app.py"""
 from __future__ import annotations
 
+from io import BytesIO
 from datetime import date, datetime, time, timedelta
 from uuid import uuid4
 
 import streamlit as st
 from streamlit_calendar import calendar
+from pypdf import PdfReader
+from pypdf.errors import PdfReadError
 
 from ai_assistant import AIError, ai_is_configured, analyze_learning_records
 from calendar_events import build_calendar_events
@@ -14,9 +17,11 @@ from exporter import export_learning_markdown
 from storage import (
     DataError, TZ, add_availabilities, add_event, add_task_to_storage,
     clear_task_availability_preference, create_id, data_path,
-    delete_availability, load_json, update_availability, update_event,
+    clear_user_data, delete_availability, delete_feedback, load_json,
+    update_availability, update_event,
     search_learning_notes, update_feedback_topic_tags, update_json, update_task,
-    save_feedback, select_demo_storage,
+    feedback_attachment_path, save_feedback, select_demo_storage,
+    save_feedback_attachment, update_feedback_attachment_filename,
 )
 from tracker import calculate_response_rate, calculate_task_progress
 from plan_bridge import merge_user_plan, normalize_plan_result
@@ -37,6 +42,27 @@ if demo_mode:
         seed_demo_data(reset=True)
         st.session_state.pop("demo_ai_result", None)
         st.rerun()
+else:
+    with st.expander("清空目前網站資料"):
+        st.warning(
+            "這會永久清除目前測試使用者的課程、可用時段、任務、排程、提醒、"
+            "回饋與 PDF、LINE 綁定及待處理流程；Webhook 防重複紀錄會保留。"
+        )
+        with st.form("clear_user_data_form"):
+            confirm_clear = st.checkbox("我了解此操作無法復原")
+            confirmation_text = st.text_input("請輸入「清空」以確認")
+            clear_clicked = st.form_submit_button("清空網站資料", type="secondary")
+            if clear_clicked:
+                if not confirm_clear or confirmation_text.strip() != "清空":
+                    st.error("請勾選確認並輸入「清空」")
+                else:
+                    try:
+                        clear_user_data(USER_ID)
+                    except DataError as exc:
+                        st.error(f"清空資料未完成：{exc}")
+                    else:
+                        st.success("目前測試使用者的網站資料已清空")
+                        st.rerun()
 
 
 
@@ -56,6 +82,19 @@ def safely(action, success: str) -> None:
         st.rerun()
     except (DataError, ValueError) as exc:
         st.error(str(exc))
+
+
+def _validate_pdf_attachment(content: bytes) -> None:
+    if not content or len(content) > 10 * 1024 * 1024:
+        raise DataError("PDF 檔案不可為空，且大小不可超過 10 MB")
+    try:
+        reader = PdfReader(BytesIO(content))
+    except PdfReadError as exc:
+        raise DataError("無法讀取此 PDF，請確認它是有效且未損壞的檔案") from exc
+    if reader.is_encrypted:
+        raise DataError("加密的 PDF 無法匯入，請解除密碼後重新上傳")
+    if not reader.pages:
+        raise DataError("PDF 沒有可讀取的頁面，請確認檔案內容")
 
 
 def handle_calendar_change() -> None:
@@ -573,6 +612,7 @@ with pages[1]:
                     "source_feedback_id": source_feedback_id,
                     "source_event_id": source_note["event_id"],
                     "source_class_date": source_note["class_date"],
+                    "reading_progress": source_note.get("course_progress", ""),
                 })
             safely(lambda: add_task_to_storage(task), "任務已新增")
 
@@ -582,11 +622,12 @@ with pages[1]:
             "任務": x["title"],
             "科目": x["subject"],
             "期限": x["deadline"],
+            "讀書進度": x.get("reading_progress", ""),
             "原始預估分鐘": x["estimated_minutes"],
             "剩餘分鐘": x.get("remaining_minutes", x["estimated_minutes"]),
             "狀態": x["status"],
         } for x in tasks], hide_index=True)
-        st.subheader("修改科目、任務名稱、狀態與期限")
+        st.subheader("修改科目、任務名稱、讀書進度、狀態與期限")
         task_by_id = {task["task_id"]: task for task in tasks}
 
         def task_label(task_id: str) -> str:
@@ -610,6 +651,13 @@ with pages[1]:
                 "科目名稱",
                 value=selected_task["subject"],
                 key=f"edit_task_subject_{selected_task_id}",
+            )
+            updated_reading_progress = st.text_input(
+                "讀書進度",
+                value=selected_task.get("reading_progress", ""),
+                max_chars=120,
+                help="預設帶入關聯筆記記錄的上課進度，可依讀書進度修改。",
+                key=f"edit_task_reading_progress_{selected_task_id}",
             )
             updated_deadline = st.date_input(
                 "Deadline",
@@ -638,6 +686,7 @@ with pages[1]:
                     **selected_task,
                     "title": updated_title.strip(),
                     "subject": updated_subject.strip(),
+                    "reading_progress": updated_reading_progress.strip(),
                     "deadline": updated_deadline.isoformat(),
                     "status": updated_status,
                 }
@@ -680,7 +729,7 @@ with pages[1]:
 
                 safely(
                     save_task_changes,
-                    "科目、任務名稱、期限與狀態已更新；請重新產生讀書計畫",
+                    "科目、任務名稱、讀書進度、期限與狀態已更新；請重新產生讀書計畫",
                 )
     else:
         st.info("新增第一項任務後，即可在此修改期限與狀態。")
@@ -719,16 +768,16 @@ with pages[1]:
                     (item for item in tasks if item.get("task_id") == row.get("task_id")),
                     {},
                 )
-                source_note = notes_by_id.get(task.get("source_feedback_id"))
-                related_notes = (
-                    [source_note]
-                    if source_note
-                    else [
+                source_feedback_id = task.get("source_feedback_id")
+                source_note = notes_by_id.get(source_feedback_id)
+                if source_feedback_id:
+                    related_notes = [source_note] if source_note else []
+                else:
+                    related_notes = [
                         note for note in own(records["feedback"])
                         if task.get("source_event_id")
                         and note.get("event_id") == task.get("source_event_id")
                     ]
-                )
                 with st.expander(
                     f"讀書時段回想筆記｜{task_titles.get(row.get('task_id'), row.get('task_id'))}"
                 ):
@@ -765,6 +814,7 @@ with pages[2]:
     c.metric("提醒回覆率", f"{reminder_stats['rate']}%" if reminder_stats["rate"] is not None else "尚無資料")
     st.caption(f"明確完成讀書任務：{task_stats['completed']} / {task_stats['total']}；回覆率不等於學習完成率。")
     st.subheader("可搜尋筆記庫")
+    st.caption("LINE 補筆記可上傳 .docx、.pdf 或 UTF-8 .txt；PDF 原檔會保留並可下載，擷取到的文字也會存入筆記供搜尋與 AI 整理。")
     library_courses = own(records["events"])
     library_notes = own(records["feedback"])
     course_titles = {event["event_id"]: event["title"] for event in library_courses}
@@ -805,12 +855,77 @@ with pages[2]:
     )
     if notes:
         for row in notes:
+            received_at = str(row.get("received_at", ""))
+            note_label = (
+                f"{row.get('class_date')}｜"
+                f"{course_titles.get(row.get('event_id'), '未知課程')}｜"
+                f"{received_at[:16].replace('T', ' ') or '無時間記錄'}｜"
+                f"{str(row.get('feedback_id', ''))[:8]}"
+            )
             with st.expander(
-                f"{row.get('class_date')}｜{course_titles.get(row.get('event_id'), '未知課程')}"
+                note_label
             ):
+                if row.get("attachment_filename"):
+                    st.caption(f"來源檔案：{row['attachment_filename']}")
+                    if row["attachment_filename"].lower().endswith(".pdf"):
+                        try:
+                            attachment_path = feedback_attachment_path(
+                                row["feedback_id"], USER_ID
+                            )
+                            if attachment_path.is_file():
+                                st.download_button(
+                                    "下載原始 PDF",
+                                    data=attachment_path.read_bytes(),
+                                    file_name=row["attachment_filename"],
+                                    mime="application/pdf",
+                                    key=f"download_pdf_{row['feedback_id']}",
+                                )
+                            else:
+                                st.caption(
+                                    "此筆舊回饋未保留 PDF 原檔；可在下方補上，不會新增重複回饋。"
+                                )
+                                with st.form(f"reattach_pdf_form_{row['feedback_id']}"):
+                                    uploaded_pdf = st.file_uploader(
+                                        "補上原始 PDF",
+                                        type=["pdf"],
+                                        key=f"reattach_pdf_{row['feedback_id']}",
+                                    )
+                                    reattach_pdf_clicked = st.form_submit_button(
+                                        "附加到這筆回饋"
+                                    )
+                                    if reattach_pdf_clicked:
+                                        if uploaded_pdf is None:
+                                            st.error("請先選擇 PDF 檔案")
+                                        else:
+                                            try:
+                                                pdf_content = uploaded_pdf.getvalue()
+                                                _validate_pdf_attachment(pdf_content)
+                                                filename = uploaded_pdf.name.replace(
+                                                    "\\", "/"
+                                                ).rsplit("/", 1)[-1]
+                                                save_feedback_attachment(
+                                                    row["feedback_id"],
+                                                    USER_ID,
+                                                    pdf_content,
+                                                )
+                                                update_feedback_attachment_filename(
+                                                    row["feedback_id"],
+                                                    USER_ID,
+                                                    filename,
+                                                )
+                                                st.success("PDF 原檔已附加至這筆回饋")
+                                                st.rerun()
+                                            except DataError as exc:
+                                                st.error(str(exc))
+                        except DataError as exc:
+                            st.error(str(exc))
+                        except OSError as exc:
+                            st.error(f"讀取 PDF 原檔失敗：{exc}")
                 st.write(row.get("content", ""))
                 if row.get("progress") is not None:
                     st.caption(f"自評理解進度：{row['progress']}/5")
+                if row.get("course_progress"):
+                    st.caption(f"上課進度：{row['course_progress']}")
                 with st.form(f"note_tags_form_{row.get('feedback_id')}"):
                     current_tags = row.get("topic_tags")
                     if current_tags is None and isinstance(row.get("ai_analysis"), dict):
@@ -863,6 +978,35 @@ with pages[2]:
                         )
                         st.caption(task_status)
                 st.caption(f"回覆時間：{row.get('received_at')}｜來源：{row.get('source')}")
+                linked_task_count = sum(
+                    task.get("source_feedback_id") == row.get("feedback_id")
+                    for task in own(records["tasks"])
+                )
+                if linked_task_count:
+                    st.warning(
+                        f"有 {linked_task_count} 個任務引用這筆回饋。刪除只移除此筆回饋，"
+                        "任務會保留，但之後無法再從任務查看這筆筆記或使用其 AI 整理。"
+                    )
+                else:
+                    st.caption("刪除只移除此筆回饋，不會影響其他筆記或任務。")
+                with st.form(f"delete_feedback_form_{row.get('feedback_id')}"):
+                    confirm_feedback_delete = st.checkbox(
+                        "我確認要刪除此筆回饋",
+                        key=f"confirm_delete_feedback_{row.get('feedback_id')}",
+                    )
+                    delete_feedback_clicked = st.form_submit_button(
+                        "刪除這筆回饋", type="secondary"
+                    )
+                    if delete_feedback_clicked:
+                        if not confirm_feedback_delete:
+                            st.error("請先勾選確認刪除此筆回饋")
+                        else:
+                            safely(
+                                lambda: delete_feedback(
+                                    row["feedback_id"], USER_ID
+                                ),
+                                "回饋已刪除；統計已更新",
+                            )
     else:
         st.info("目前沒有符合篩選條件的筆記；可清除篩選或先記錄一筆課後回饋。")
 

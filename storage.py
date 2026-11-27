@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 from contextvars import ContextVar
+import hashlib
 import json
 import os
 import tempfile
@@ -174,6 +175,9 @@ def validate_task(task: dict) -> dict:
         raise DataError("status 應為 pending 或 completed")
     if not isinstance(task.get("preferred_availability_id", ""), str):
         raise DataError("preferred_availability_id 必須是字串")
+    reading_progress = task.get("reading_progress", "")
+    if not isinstance(reading_progress, str) or len(reading_progress) > 120:
+        raise DataError("讀書進度必須是 120 字以內的文字")
     return task
 
 
@@ -402,10 +406,16 @@ def validate_feedback(feedback: dict) -> dict:
     progress = feedback.get("progress")
     if progress is not None and (type(progress) is not int or not 1 <= progress <= 5):
         raise DataError("自評進度必須是 1 到 5 的整數")
+    course_progress = feedback.get("course_progress", "")
+    if not isinstance(course_progress, str) or len(course_progress) > 120:
+        raise DataError("上課進度必須是 120 字以內的文字")
     if feedback["source"] not in ("selected", "push", "demo"):
         raise DataError("不支援的筆記來源")
     if not isinstance(feedback.get("reminder_id", ""), str):
         raise DataError("reminder_id 必須是字串")
+    attachment_filename = feedback.get("attachment_filename", "")
+    if not isinstance(attachment_filename, str) or len(attachment_filename) > 255:
+        raise DataError("附件檔名必須是 255 字元內的文字")
     tags = feedback.get("topic_tags", [])
     if (
         not isinstance(tags, list)
@@ -492,6 +502,147 @@ def update_feedback_topic_tags(
         ]
 
     return update_json(data_path("feedback"), change)
+
+
+def delete_feedback(feedback_id: str, user_id: str) -> list:
+    def change(items: list) -> list:
+        if not any(
+            row.get("feedback_id") == feedback_id and row.get("user_id") == user_id
+            for row in items
+        ):
+            raise DataError("找不到要刪除的課後回饋，請重新整理後再試")
+        return [
+            row
+            for row in items
+            if not (
+                row.get("feedback_id") == feedback_id
+                and row.get("user_id") == user_id
+            )
+        ]
+
+    updated = update_json(data_path("feedback"), change)
+    delete_feedback_attachment(feedback_id, user_id)
+    return updated
+
+
+def feedback_attachment_path(feedback_id: str, user_id: str) -> Path:
+    if not isinstance(feedback_id, str) or not feedback_id:
+        raise DataError("回饋 ID 不可空白")
+    if not isinstance(user_id, str) or not user_id:
+        raise DataError("使用者 ID 不可空白")
+    attachment_id = hashlib.sha256(
+        f"{user_id}\0{feedback_id}".encode("utf-8")
+    ).hexdigest()
+    return data_path("feedback").parent / "attachments" / f"{attachment_id}.pdf"
+
+
+def update_feedback_attachment_filename(
+    feedback_id: str,
+    user_id: str,
+    filename: str,
+) -> list:
+    if (
+        not isinstance(filename, str)
+        or not filename.strip()
+        or len(filename) > 255
+        or not filename.lower().endswith(".pdf")
+    ):
+        raise DataError("PDF 附件檔名必須是 255 字元內的 .pdf 檔名")
+
+    def change(items: list) -> list:
+        if not any(
+            row.get("feedback_id") == feedback_id
+            and row.get("user_id") == user_id
+            for row in items
+        ):
+            raise DataError("找不到要補上 PDF 的課後回饋")
+        return [
+            {**row, "attachment_filename": filename.strip()}
+            if row.get("feedback_id") == feedback_id and row.get("user_id") == user_id
+            else row
+            for row in items
+        ]
+
+    return update_json(data_path("feedback"), change)
+
+
+def save_feedback_attachment(
+    feedback_id: str,
+    user_id: str,
+    content: bytes,
+) -> Path:
+    if not isinstance(content, bytes) or not content:
+        raise DataError("PDF 附件內容不可為空")
+    if len(content) > 10 * 1024 * 1024:
+        raise DataError("PDF 附件超過 10 MB")
+    path = feedback_attachment_path(feedback_id, user_id)
+    temporary_name = ""
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with FileLock(str(path) + ".lock", timeout=8):
+            fd, temporary_name = tempfile.mkstemp(
+                prefix=f".{path.stem}.", suffix=".tmp", dir=path.parent
+            )
+            with os.fdopen(fd, "wb") as attachment_file:
+                attachment_file.write(content)
+                attachment_file.flush()
+                os.fsync(attachment_file.fileno())
+            os.replace(temporary_name, path)
+    except (Timeout, OSError) as exc:
+        raise DataError(f"儲存 PDF 附件失敗：{exc}") from exc
+    finally:
+        if temporary_name and os.path.exists(temporary_name):
+            os.unlink(temporary_name)
+    return path
+
+
+def delete_feedback_attachment(feedback_id: str, user_id: str) -> None:
+    path = feedback_attachment_path(feedback_id, user_id)
+    if not path.parent.exists():
+        return
+    try:
+        with FileLock(str(path) + ".lock", timeout=8):
+            try:
+                path.unlink()
+            except FileNotFoundError:
+                pass
+    except (Timeout, OSError) as exc:
+        raise DataError(f"移除 PDF 附件失敗：{exc}") from exc
+
+
+def clear_user_data(user_id: str) -> None:
+    if not isinstance(user_id, str) or not user_id:
+        raise DataError("使用者 ID 不可空白")
+
+    for name in (
+        "pending_notes",
+        "plan",
+        "reminders",
+        "availability",
+        "tasks",
+        "events",
+        "users",
+    ):
+        update_json(
+            data_path(name),
+            lambda rows: [row for row in rows if row.get("user_id") != user_id],
+        )
+
+    feedback_path = data_path("feedback")
+    feedback = load_json(feedback_path)
+    feedback_ids = {
+        row.get("feedback_id")
+        for row in feedback
+        if row.get("user_id") == user_id
+        and isinstance(row.get("feedback_id"), str)
+        and row.get("feedback_id")
+    }
+    update_json(
+        feedback_path,
+        lambda rows: [row for row in rows if row.get("user_id") != user_id],
+    )
+    for feedback_id in feedback_ids:
+        delete_feedback_attachment(feedback_id, user_id)
 
 
 def search_learning_notes(

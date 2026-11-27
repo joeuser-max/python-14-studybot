@@ -6,8 +6,9 @@ from zoneinfo import ZoneInfo
 
 import requests
 
+from ai_assistant import AIError, organize_class_feedback
 from scheduler import get_due_events, get_due_study_checkins, get_due_study_reminders
-from storage import data_path, load_json, update_json
+from storage import DataError, data_path, load_json, update_feedback_analysis, update_json
 
 
 TZ = ZoneInfo("Asia/Taipei")
@@ -74,6 +75,54 @@ def _mark_unscheduled_alerted(alert_id: str) -> None:
     update_json(data_path("plan"), update)
 
 
+def _study_session_message(task: dict, user: dict, feedbacks: list[dict]) -> str:
+    subject = task.get("subject") or "未指定科目"
+    title = task.get("title") or task.get("task_id", "")
+    text = f"讀書時段開始囉！任務：科目「{subject}」，{title}，請開始完成。"
+    feedback_id = task.get("source_feedback_id")
+    if user.get("ai_after_class_enabled") is not True or not feedback_id:
+        return text
+
+    feedback = next(
+        (
+            row for row in feedbacks
+            if row.get("feedback_id") == feedback_id
+            and row.get("user_id") == task.get("user_id")
+        ),
+        None,
+    )
+    if not feedback:
+        return text + "\n找不到這項任務關聯的課後筆記，請到 ClassPulse 筆記庫查看。"
+
+    analysis = feedback.get("ai_analysis")
+    if not isinstance(analysis, dict):
+        try:
+            analysis = organize_class_feedback(feedback, subject)
+        except AIError as exc:
+            return text + f"\nAI 筆記整理未完成：{exc}；原始筆記仍保存在筆記庫。"
+        try:
+            update_feedback_analysis(feedback_id, task["user_id"], analysis)
+        except DataError as exc:
+            return text + f"\nAI 整理結果未能保存：{exc}；原始筆記仍保存在筆記庫。"
+
+    lines = [text, "AI 根據課後筆記整理的複習內容：", f"摘要：{analysis['summary']}"]
+    if analysis.get("key_points"):
+        lines.append("重點：")
+        lines.extend(f"・{point}" for point in analysis["key_points"])
+    if analysis.get("unresolved_questions"):
+        lines.append("待釐清：")
+        lines.extend(f"・{question}" for question in analysis["unresolved_questions"])
+    if analysis.get("topic_tags"):
+        lines.append("主題：" + "、".join(analysis["topic_tags"]))
+    if analysis.get("suggested_task"):
+        lines.append(
+            f"AI 複習建議：{analysis['suggested_task']}（AI 參考時長 "
+            f"{analysis['estimated_minutes']} 分鐘；本次排程依你設定的 "
+            f"{task['estimated_minutes']} 分鐘）"
+        )
+    return "\n".join(lines)
+
+
 def run_reminder_worker_once(now: datetime | None = None) -> list[dict]:
     now = now or datetime.now(TZ)
     now = now.astimezone(TZ) if now.tzinfo else now.replace(tzinfo=TZ)
@@ -83,12 +132,14 @@ def run_reminder_worker_once(now: datetime | None = None) -> list[dict]:
     availability = load_json(data_path("availability"))
     users = load_json(data_path("users"))
     reminders = load_json(data_path("reminders"))
+    feedbacks = load_json(data_path("feedback"))
 
     due = get_due_events(events, now, reminders)
     due.extend(get_due_study_reminders(tasks, plan, availability, users, now, reminders))
     due.extend(get_due_study_checkins(tasks, plan, availability, users, now, reminders))
     task_map = {task["task_id"]: task for task in tasks}
     user_map = {user["user_id"]: user for user in users}
+    event_map = {event["event_id"]: event for event in events}
     existing_ids = {row.get("reminder_id") for row in reminders}
 
     for row in plan:
@@ -143,15 +194,15 @@ def run_reminder_worker_once(now: datetime | None = None) -> list[dict]:
             continue
 
         if reminder["kind"] == "class_feedback":
+            course = event_map.get(reminder["event_id"], {})
+            course_title = course.get("title") or "課程"
             text = (
-                "課後回饋時間到囉！請在 LINE 輸入「補筆記」，"
+                f"「{course_title}」課程已結束！請在 LINE 輸入「補筆記」，"
                 "回報本堂理解進度並記錄學習重點與疑問。"
             )
         elif reminder["kind"] == "study_session":
             task = task_map.get(reminder["task_id"], {})
-            subject = task.get("subject") or "未指定科目"
-            title = task.get("title") or reminder["task_id"]
-            text = f"讀書時段開始囉！任務：科目「{subject}」，{title}，請開始完成。"
+            text = _study_session_message(task, user, feedbacks)
         elif reminder["kind"] == "study_session_checkin":
             task = task_map.get(reminder["task_id"], {})
             task_id = reminder["task_id"]

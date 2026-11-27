@@ -69,6 +69,7 @@ def export_learning_markdown(records: dict, now: datetime | None = None,
         remaining = t.get("remaining_minutes", t.get("estimated_minutes", "未提供"))
         lines.append(f"- [{field(t.get('task_id'))}] {field(t.get('subject'))}／{field(t.get('title'))}｜期限：{field(t.get('deadline'))}"
                      f"｜原始預估：{field(t.get('estimated_minutes'))} 分鐘"
+                     f"｜讀書進度：{field(t.get('reading_progress') or '未提供')}"
                      f"｜剩餘：{field(remaining)} 分鐘｜狀態：{field(t.get('status'))}"
                      f"｜來源課程：{field(source_event.get('title') or '未提供')}"
                      f"｜來源筆記：{field(t.get('source_feedback_id') or '未提供')}")
@@ -95,6 +96,8 @@ def export_learning_markdown(records: dict, now: datetime | None = None,
         lines.append(f"  - 筆記：{field(f.get('content'))}")
         if f.get("progress") is not None:
             lines.append(f"  - 自評理解進度：{field(f.get('progress'))}/5")
+        if f.get("course_progress"):
+            lines.append(f"  - 上課進度：{field(f.get('course_progress'))}")
         topic_tags = f.get("topic_tags")
         if topic_tags is None and isinstance(f.get("ai_analysis"), dict):
             topic_tags = f["ai_analysis"].get("topic_tags", [])

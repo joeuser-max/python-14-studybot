@@ -3,6 +3,7 @@ from zoneinfo import ZoneInfo
 
 
 TZ = ZoneInfo("Asia/Taipei")
+STUDY_SESSION_START_GRACE = timedelta(minutes=15)
 
 
 def _iso(value: datetime) -> str:
@@ -31,6 +32,28 @@ def _scheduled_start(row: dict, slot: dict) -> datetime:
         start = datetime.fromisoformat(value)
         return start.astimezone(TZ) if start.tzinfo else start.replace(tzinfo=TZ)
     return _date_and_time(slot["date"], slot["start_time"])
+
+
+def _session_reminder_id(kind: str, task_id: str, slot_id: str, start: datetime) -> str:
+    return f"{kind}_{task_id}_{slot_id}_{start.strftime('%Y%m%d%H%M')}"
+
+
+def _existing_session_reminder(
+    existing: dict[tuple, list[dict]],
+    key: tuple,
+    scheduled_at: str,
+) -> dict | None:
+    candidates = existing.get(key, [])
+    exact = next(
+        (item for item in candidates if item.get("scheduled_at") == scheduled_at),
+        None,
+    )
+    if exact:
+        return exact
+    return next(
+        (item for item in reversed(candidates) if item.get("status") != "sent"),
+        None,
+    )
 
 
 def _task_minutes(task: dict) -> int:
@@ -254,12 +277,21 @@ def get_due_events(
 ) -> list[dict]:
     now = now.astimezone(TZ) if now.tzinfo else now.replace(tzinfo=TZ)
     due = []
-    existing = {
-        (item.get("user_id"), item.get("event_id"), item.get("class_date")): item
-        for item in reminders
-        if item.get("kind") == "class_feedback"
-        and item.get("status") in {"pending", "sent", "failed"}
-    }
+    existing: dict[tuple[str, str, str, str], dict] = {}
+    by_class_date: dict[tuple[str, str, str], list[dict]] = {}
+    for item in reminders:
+        if (
+            item.get("kind") != "class_feedback"
+            or item.get("status") not in {"pending", "sent", "failed"}
+        ):
+            continue
+        class_key = (
+            item.get("user_id", ""),
+            item.get("event_id", ""),
+            item.get("class_date", ""),
+        )
+        existing[(*class_key, item.get("scheduled_at", ""))] = item
+        by_class_date.setdefault(class_key, []).append(item)
 
     for event in events:
         if event.get("event_type") != "class" or not event.get("enabled", True):
@@ -274,21 +306,37 @@ def get_due_events(
                 continue
             end_dt = datetime.combine(date, end, tzinfo=TZ) + timedelta(minutes=offset)
             class_date = date.isoformat()
-            key = (event["user_id"], event["event_id"], class_date)
-            old = existing.get(key)
+            class_key = (event["user_id"], event["event_id"], class_date)
+            scheduled_at = _iso(end_dt)
+            old = existing.get((*class_key, scheduled_at))
+            if old is None:
+                # Retry an outstanding reminder, but don't let an older sent
+                # reminder suppress one after the course end time changes.
+                old = next(
+                    (
+                        item for item in reversed(by_class_date.get(class_key, []))
+                        if item.get("status") in {"pending", "failed"}
+                    ),
+                    None,
+                )
+            if old is None:
+                old = existing.get((*class_key, ""))
             if old:
                 if old.get("status") != "sent" and end_dt <= now:
                     due.append(dict(old))
-            elif timedelta(0) <= now - end_dt <= timedelta(minutes=5):
+            elif timedelta(0) <= now - end_dt <= timedelta(minutes=60):
                 due.append({
-                        "reminder_id": f"class_{event['event_id']}_{class_date}",
+                        "reminder_id": (
+                            f"class_{event['event_id']}_{class_date}_"
+                            f"{end_dt.strftime('%H%M')}"
+                        ),
                         "user_id": event["user_id"],
                         "event_id": event["event_id"],
                         "task_id": "",
                         "availability_id": "",
                         "class_date": class_date,
                         "kind": "class_feedback",
-                        "scheduled_at": _iso(end_dt),
+                        "scheduled_at": scheduled_at,
                         "sent_at": "",
                         "status": "pending",
                         "retry_key": "",
@@ -312,12 +360,14 @@ def get_due_study_reminders(
         if user.get("study_reminders_enabled", False)
         and user.get("line_user_id")
     }
-    existing = {
-        (item.get("user_id"), item.get("task_id"), item.get("availability_id")): item
-        for item in reminders
-        if item.get("kind") == "study_session"
-        and item.get("status") in {"pending", "sent", "failed"}
-    }
+    existing: dict[tuple, list[dict]] = {}
+    for item in reminders:
+        if (
+            item.get("kind") == "study_session"
+            and item.get("status") in {"pending", "sent", "failed"}
+        ):
+            key = (item.get("user_id"), item.get("task_id"), item.get("availability_id"))
+            existing.setdefault(key, []).append(item)
     task_map = {task["task_id"]: task for task in tasks}
     slot_map = {slot["availability_id"]: slot for slot in availability}
     due = []
@@ -333,17 +383,19 @@ def get_due_study_reminders(
         if user_id not in enabled_users:
             continue
         key = (user_id, task["task_id"], slot["availability_id"])
-        old = existing.get(key)
+        start = _scheduled_start(row, slot)
+        old = _existing_session_reminder(existing, key, _iso(start))
         if old and old.get("status") == "sent":
             continue
-        start = _scheduled_start(row, slot)
         if old:
             if old.get("status") != "sent" and start <= now:
                 due.append(dict(old))
             continue
-        if start <= now and start >= now - timedelta(minutes=5):
+        if start <= now and start >= now - STUDY_SESSION_START_GRACE:
             due.append({
-                "reminder_id": f"study_{task['task_id']}_{slot['availability_id']}",
+                "reminder_id": _session_reminder_id(
+                    "study", task["task_id"], slot["availability_id"], start
+                ),
                 "user_id": user_id,
                 "event_id": "",
                 "task_id": task["task_id"],
@@ -371,12 +423,14 @@ def get_due_study_checkins(
         user["user_id"] for user in users
         if user.get("study_reminders_enabled", False) and user.get("line_user_id")
     }
-    existing = {
-        (item.get("user_id"), item.get("task_id"), item.get("availability_id")): item
-        for item in reminders
-        if item.get("kind") == "study_session_checkin"
-        and item.get("status") in {"pending", "sent", "failed"}
-    }
+    existing: dict[tuple, list[dict]] = {}
+    for item in reminders:
+        if (
+            item.get("kind") == "study_session_checkin"
+            and item.get("status") in {"pending", "sent", "failed"}
+        ):
+            key = (item.get("user_id"), item.get("task_id"), item.get("availability_id"))
+            existing.setdefault(key, []).append(item)
     task_map = {task["task_id"]: task for task in tasks}
     slot_map = {slot["availability_id"]: slot for slot in availability}
     due = []
@@ -393,18 +447,20 @@ def get_due_study_checkins(
             continue
 
         key = (user_id, task["task_id"], slot["availability_id"])
-        old = existing.get(key)
-        if old and old.get("status") == "sent":
-            continue
         start = _scheduled_start(row, slot)
         session_end = start + timedelta(minutes=_task_minutes(task))
+        old = _existing_session_reminder(existing, key, _iso(session_end))
+        if old and old.get("status") == "sent":
+            continue
         if old:
             if old.get("status") != "sent" and session_end <= now:
                 due.append(dict(old))
             continue
         if session_end <= now and session_end >= now - timedelta(minutes=5):
             due.append({
-                "reminder_id": f"checkin_{task['task_id']}_{slot['availability_id']}",
+                "reminder_id": _session_reminder_id(
+                    "checkin", task["task_id"], slot["availability_id"], start
+                ),
                 "user_id": user_id,
                 "event_id": "",
                 "task_id": task["task_id"],

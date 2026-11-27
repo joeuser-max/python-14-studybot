@@ -46,7 +46,7 @@ py -3.11 --version
 切換到專案資料夾（若你的資料夾位置不同，請修改路徑）：
 
 ```powershell
-Set-Location 'C:\Users\yuzhe\Desktop\程式設計-python期末專案作業\python-14-studybot\python-14-studybot'
+Set-Location 'C:\Users\yuzhe\Desktop\程式設計-python期末專案作業\python-14-studybot'
 ```
 
 建立虛擬環境並安裝套件：
@@ -114,11 +114,15 @@ py -3.11 -m venv .venv
 
 要測無法排入：建立一個預估分鐘數大於所有可用時段的任務，再重新產生計畫。
 
-要修改科目名稱、任務名稱、期限、剩餘分鐘或狀態：在任務清單下方的修改區選擇任務並編輯欄位。若 LINE 未回覆讀書進度，可在「剩餘所需分鐘」手動回報；儲存會清除舊計畫，請再按「產生／重新安排計畫」。標記為 `completed` 的任務不會再被安排。已有關聯筆記的排定任務，下方會提供「讀書時段回想筆記」入口。
+要修改科目名稱、任務名稱、讀書進度、期限、剩餘分鐘或狀態：在任務清單下方的修改區選擇任務並編輯欄位。若 LINE 未回覆讀書進度，可在「剩餘所需分鐘」手動回報；儲存會清除舊計畫，請再按「產生／重新安排計畫」。標記為 `completed` 的任務不會再被安排。已有關聯筆記的排定任務，下方會提供「讀書時段回想筆記」入口。
 
 ### 3.3 查看回饋、統計與下載
 
-切到 **「回饋與進度」** 查看已送出課後提醒、已回覆課次、回覆率及任務完成數。筆記庫可依課程、課次日期與主題標籤搜尋；每筆筆記都可手動新增、修改或移除標籤。沒有成功送出的課後提醒時，回覆率會顯示「尚無資料」。
+切到 **「回饋與進度」** 查看已送出課後提醒、已回覆課次、回覆率及任務完成數。筆記庫可依課程、課次日期與主題標籤搜尋；每筆筆記都可手動新增、修改或移除標籤，也可勾選確認後刪除單筆重複回饋。刪除會移除該筆回饋及其保留的 PDF 原檔，但不會刪除已建立的任務；若任務引用這筆回饋，任務仍保留，但不再能回看該筆筆記或使用其 AI 整理。沒有成功送出的課後提醒時，回覆率會顯示「尚無資料」。
+
+若要重置一般模式的網站資料，展開頁面上方 **「清空目前網站資料」**，勾選確認並輸入「清空」。這會清除目前測試使用者的課程、可用時段、任務、排程、提醒、回饋／PDF、LINE 綁定及待處理流程；Webhook 防重複紀錄會保留。展示模式請使用「重設展示資料」。
+
+在 LINE 補筆記時，選擇課程並回報 1–5 理解程度後，還會詢問上課進度（例如 `Ch.3`、`第三章 p.20` 或 `進度 60%`）；不確定時可回覆「略過」。此進度會存入筆記，代表目前課程進度。筆記儲存後，系統直接使用已回報的進度範圍，自動產生「複習＋進度」任務名稱；若略過進度，則先詢問本次讀書範圍。接著由你輸入讀書分鐘數、Deadline，再從期限前可行時段選擇日期與時間；只有選定時段後才建立／排程任務，不會代選、拆分或採用 AI 推估時長。若沒有合適時段，可調整分鐘數、Deadline 或 ClassPulse 可用時段後重新查詢；回覆「先不用」則只保留筆記。若已啟用課後 AI，AI 不會先要求你確認建議任務；Worker 會在你選定的讀書時段開始時，根據這份筆記整理摘要、重點、待釐清問題與複習建議，並連同讀書提醒傳給你。筆記可直接輸入，或上傳 `.docx`、`.pdf` 或 UTF-8 編碼的 `.txt` 檔案。PDF 原檔會保留在本機資料目錄，可從筆記庫下載；舊回饋若只存了文字，也可在該筆回饋旁重新上傳 PDF 原檔，不會建立重複回饋。擷取到的可讀文字仍供搜尋與 AI 整理。DOCX/TXT 以文字存入。單檔上限 10 MB、擷取文字上限 50,000 字。加密 PDF、掃描影像 PDF（尚未支援 OCR）、圖片及舊版 `.doc` 暫不支援。
 
 切到 **「Markdown 與 AI」**：
 
@@ -153,7 +157,7 @@ Webhook 啟動前要設定 Channel Secret、Channel Access Token 和綁定碼；
 第一次設定時，在專案資料夾的 PowerShell 執行以下命令，複製範例檔並用記事本編輯：
 
 ```powershell
-Set-Location 'C:\Users\yuzhe\Desktop\程式設計-python期末專案作業\python-14-studybot\python-14-studybot'
+Set-Location 'C:\Users\yuzhe\Desktop\程式設計-python期末專案作業\python-14-studybot'
 if (-not (Test-Path '.env')) { Copy-Item '.env.example' '.env' }
 notepad .env
 ```
@@ -239,7 +243,7 @@ LINE 不能直接連到 `localhost`，需用 HTTPS Tunnel 將公網請求轉到�
 另開一個 PowerShell 視窗，切到專案資料夾並啟動 Worker。Worker 會自動讀取相同的 `.env`，不必再貼一次 Token：
 
 ```powershell
-Set-Location 'C:\Users\yuzhe\Desktop\程式設計-python期末專案作業\python-14-studybot\python-14-studybot'
+Set-Location 'C:\Users\yuzhe\Desktop\程式設計-python期末專案作業\python-14-studybot'
 .\.venv\Scripts\python.exe reminder_worker.py
 ```
 
@@ -253,9 +257,9 @@ Set-Location 'C:\Users\yuzhe\Desktop\程式設計-python期末專案作業\pytho
 2. 新增一個開始時間在未來幾分鐘內的可用時段，分鐘數要足以容納任務。
 3. 新增 Deadline 晚於該時段的任務，預估分鐘數不要大於時段長度。
 4. 按「產生／重新安排計畫」，確認任務已排在該時段。
-5. 開始提醒會同時顯示科目與任務名稱，例如「讀書時段開始囉！任務：科目「英文」，ch2，請開始完成。」
+5. 開始提醒會同時顯示科目與任務名稱；若任務關聯已同意 AI 的課後筆記，提醒也會附上 AI 摘要、重點、待釐清問題及複習建議。
 5. 在排程開始前先啟動 Worker 並保持執行；時段開始後等候最多約一分鐘。
-6. 確認 LINE 收到任務提醒；`data\reminders.json` 中該筆提醒應為 `study_session`，成功時狀態為 `sent`。同一任務／時段不會重複送出。
+6. 確認 LINE 收到任務提醒；`data\reminders.json` 中該筆提醒應為 `study_session`，成功時狀態為 `sent`。同一排定開始時間不會重複送出；未完成後重新排入的讀書時段會視為新一輪，並再次提醒。Worker 暫停後 15 分鐘內恢復時，也會補送尚未送出的開始提醒。
 7. 任務預估時長結束時，LINE 會詢問進度。依訊息回覆「完成 任務代碼」或「未完成 任務代碼」；未完成時再輸入剩餘分鐘數，Webhook 會以剩餘時間重新安排。若只有一筆待確認任務，也可直接回覆「完成」或「未完成」。沒有回覆不會標記完成；可在任務修改區手動更新剩餘分鐘，再按「產生／重新安排計畫」。
 
 要測未排入警示，可建立預估時間超過所有可用時段的任務、重新排程，確認頁面顯示原因並等待 Worker 發送警示。
@@ -264,9 +268,9 @@ Set-Location 'C:\Users\yuzhe\Desktop\程式設計-python期末專案作業\pytho
 
 1. 確認 Worker 正在執行、LINE 已綁定，而且「接收課後提醒與未排入警示」已打開。
 2. 在 Streamlit 新增一門課，星期選今天、下課時間設為幾分鐘後，提醒偏移設 `0`。開始時間必須早於下課時間。
-3. 保持 Worker 執行。課程結束後約一分鐘內，LINE 應收到課後提醒；首次觸發需在排定提醒時間後 5 分鐘內。
-4. 在 LINE **輸入** `補筆記`，依序選星期、回覆課表清單上的編號、回報理解進度 `1` 至 `5`，再輸入上課重點或疑問。
-5. 已在 Streamlit 啟用 AI 同意且 Flask 設定 OpenAI API 時，LINE 會回傳整理摘要、課堂重點、待釐清問題與一項複習任務建議。回覆「加入讀書任務」後才會建立任務並依可用時段排程；回覆「先不用」只保留筆記。未啟用 AI 時，筆記與進度仍會照常保存。
+3. 保持 Worker 執行。課程結束後約一分鐘內，LINE 應收到課後提醒；若 Worker 暫停，排定提醒時間後 60 分鐘內恢復可補送。
+4. 在 LINE **輸入** `補筆記`，依序選星期、回覆課表清單上的編號、回報理解進度 `1` 至 `5`、輸入目前上課進度（例如 `Ch.3`，或回覆「略過」），再輸入上課重點或疑問，或上傳 `.docx`、`.pdf`／UTF-8 `.txt` 筆記檔。PDF 原檔會保留在本機，網頁筆記庫可下載；可讀文字仍會擷取供搜尋與 AI 使用。
+5. 筆記存好後，系統依已回報的上課進度產生任務名稱（若進度略過則先詢問讀書範圍），並請你輸入讀書分鐘數與 Deadline，再選擇可行時段。只有你選定日期與時間後才會建立／排程任務。若已啟用課後 AI 且設定 OpenAI API，AI 會在所選讀書時段開始時提供這份筆記的摘要、重點、待釐清問題與複習建議；AI 建議不會取代你設定的任務內容、分鐘數或時段。回覆「先不用」只保留筆記；若無足夠時段，系統會說明狀況並請你調整可用時段、分鐘數或 Deadline，不會自行拆分或安排。
 6. 如果手動補登的課次沒有成功送出的課後提醒，筆記仍會保存，但不會計入提醒回覆率。
 
 筆記日期只會定位最近 7 天內已結束的同星期課次。輸入 `取消` 可中止流程；選課後 10 分鐘沒有完成時，狀態會逾時清除。Webhook 狀態和筆記分別可在 `data\processed_webhooks.json`、`data\feedback.json` 查看。
@@ -275,7 +279,7 @@ Set-Location 'C:\Users\yuzhe\Desktop\程式設計-python期末專案作業\pytho
 
 AI 整理不是記錄課後回饋或手動排程的必要條件。若要讓 LINE 回饋後自動整理筆記，請在 `.env` 填入 OpenAI API Key 和支援 Structured Outputs 的模型名稱，然後重新啟動 Flask 與 Streamlit。
 
-在 Streamlit「LINE 提醒設定」勾選並儲存「同意使用 AI 整理課後筆記並建議複習任務」。每次回饋只會把課程名稱、筆記文字及使用者自評進度送至 OpenAI，不會傳送 LINE User ID 或資料 ID。OpenAI API 可能依帳戶方案計費。AI 建議的複習任務必須先由使用者在 LINE 確認；確認後才新增，接著由既有規則式 scheduler 依期限、已固定任務與可用時段安排，不是讓模型直接改動行事曆。預設 Deadline 為課後 7 天，可在 Streamlit 修改。
+在 Streamlit「LINE 提醒設定」勾選並儲存「同意使用 AI 整理課後筆記並建議複習任務」。任務排定後，Worker 才會把課程名稱、筆記文字及自評進度送至 OpenAI，不會傳送 LINE User ID 或資料 ID。OpenAI API 可能依帳戶方案計費。AI 產生的摘要與建議會在該任務排定的讀書時段開始時傳給使用者；任務名稱、讀書分鐘數、Deadline 和時段均由使用者決定，AI 不會替使用者新增或改排任務。若 AI API 失敗，原始筆記與已排程任務仍保留，讀書提醒會說明整理失敗。
 
 若未同意或 API 尚未設定，筆記與進度仍會保存，但不會送往 AI。API 失敗時也會保留原始回饋。舊的「Markdown 與 AI」頁面仍可在使用者另行同意後，手動分析匯出的學習資料。不要把 API Key 放進 `.env.example`、README、截圖或 Git。
 
@@ -290,7 +294,7 @@ AI 整理不是記錄課後回饋或手動排程的必要條件。若要讓 LINE
 | `data\users.json` | LINE 綁定、提醒開關及課後 AI 同意設定 |
 | `data\reminders.json` | 推送類型、狀態、時間及 retry key |
 | `data\feedback.json` | LINE 筆記、自評進度及可選 AI 整理結果 |
-| `data\pending_notes.json` | 暫存中的補筆記／AI 任務確認流程 |
+| `data\pending_notes.json` | 暫存中的補筆記、讀書分鐘數、Deadline 與時段選擇流程 |
 | `data\processed_webhooks.json` | 已處理的 Webhook ID |
 
 開始前可備份 `data\`。要清空測試資料時，請先停止 Streamlit、Webhook、Worker，再將上述 JSON 檔內容逐一改成 `[]`；不要刪除或覆寫有用的正式資料。`CLASSPULSE_DATA_DIR` 可將資料指定到另一個本機資料目錄。
@@ -303,7 +307,8 @@ AI 整理不是記錄課後回饋或手動排程的必要條件。若要讓 LINE
 - **ngrok 顯示 `ERR_NGROK_121` 或版本過舊**：執行 `ngrok update`，再執行 `ngrok version` 確認已更新。ngrok Authtoken 無效時，從 ngrok Dashboard 重新取得並執行 `ngrok config add-authtoken`；不要使用 LINE Token 代替。
 - **Flask 日誌顯示 `POST /Webhook 404`**：路徑大小寫不同。程式只註冊小寫 `/webhook`；請在 LINE Developers 將 Webhook URL 改成 `https://你的-ngrok-網址/webhook`（全小寫）後再按 **Verify**。此時請求尚未進入簽章驗證；若改好後變成 401，再依下方檢查 Channel Secret。
 - **LINE Verify 顯示 401**：代表請求已到 Flask，但簽章驗證失敗。確認 `LINE_CHANNEL_SECRET` 是同一個 Messaging API Channel 的 **Basic settings → Channel secret**，不是 Channel Access Token；設定環境變數後必須重新啟動 Flask，因程式在啟動時讀取 Secret。確認 URL 使用目前 Tunnel 網址並以 `/webhook` 結尾。
-- **LINE 沒收到提醒**：確認 Worker 還在執行、Access Token 正確、使用者已綁定，Streamlit 的對應提醒開關已啟用；讀書任務需是 pending 且目前排程仍指向該時段。
+- **LINE 沒收到課後提醒**：確認 Worker 還在執行、Access Token 正確、使用者已綁定，課程已啟用且 Streamlit 的「接收課後提醒與未排入警示」已打開。提醒時間是下課時間加上提醒偏移；若修改過課程時間，請確認 Worker 已重新啟動並載入新版程式。可檢查 `data\reminders.json` 的 `class_feedback`、`scheduled_at` 與 `status`，確認實際排定時間和送出狀態。
+- **LINE 沒收到讀書提醒**：確認 Worker 還在執行、使用者已綁定且 Streamlit 的讀書提醒開關已啟用；讀書任務需是 pending 且目前排程仍指向該時段。
 - **排程顯示未排入**：確認時段日期在未來、Deadline 不早於時段結束、時段長度足夠且沒有重疊；頁面會列出原因。
 - **補筆記沒有對到課程**：確認使用者已綁定、星期與課表一致，且該課在最近 7 天內已結束。
 - **JSON 資料格式錯誤**：程式會停止寫入以避免覆蓋壞檔；先備份並修復該 JSON，確認它是有效陣列後再重啟。

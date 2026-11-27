@@ -2,6 +2,7 @@ from datetime import datetime
 from zoneinfo import ZoneInfo
 
 from scheduler import (
+    get_due_study_checkins,
     get_due_study_reminders,
     make_plan,
     update_task_status,
@@ -59,3 +60,67 @@ def test_study_reminder_only_due_once():
     now = datetime(2026, 11, 23, 19, tzinfo=TZ)
     due = get_due_study_reminders(tasks, plan, slots, users, now, [])
     assert len(due) == 1
+    sent = [{**due[0], "status": "sent"}]
+    assert get_due_study_reminders(tasks, plan, slots, users, now, sent) == []
+
+
+def test_replanned_session_in_same_slot_gets_a_new_start_reminder():
+    tasks = [{
+        "task_id": "t1", "user_id": "u1", "status": "pending",
+        "estimated_minutes": 30, "remaining_minutes": 10,
+    }]
+    plan = [{
+        "task_id": "t1", "availability_id": "a1", "status": "scheduled",
+        "scheduled_start": "2026-11-23T19:25+08:00",
+    }]
+    slots = [{
+        "availability_id": "a1", "user_id": "u1", "date": "2026-11-23",
+        "start_time": "19:00", "available_minutes": 60,
+    }]
+    users = [{"user_id": "u1", "line_user_id": "line1", "study_reminders_enabled": True}]
+    previous_reminders = [{
+        "reminder_id": "study_t1_a1_202611231900",
+        "user_id": "u1", "task_id": "t1", "availability_id": "a1",
+        "kind": "study_session", "scheduled_at": "2026-11-23T19:00+08:00",
+        "status": "sent",
+    }]
+
+    due = get_due_study_reminders(
+        tasks, plan, slots, users,
+        datetime(2026, 11, 23, 19, 31, tzinfo=TZ), previous_reminders,
+    )
+
+    assert len(due) == 1
+    assert due[0]["scheduled_at"] == "2026-11-23T19:25+08:00"
+    assert due[0]["reminder_id"] != previous_reminders[0]["reminder_id"]
+
+
+def test_replanned_session_in_same_slot_gets_a_new_checkin():
+    tasks = [{
+        "task_id": "t1", "user_id": "u1", "status": "pending",
+        "estimated_minutes": 10, "remaining_minutes": 10,
+    }]
+    plan = [{
+        "task_id": "t1", "availability_id": "a1", "status": "scheduled",
+        "scheduled_start": "2026-11-23T19:25+08:00",
+    }]
+    slots = [{
+        "availability_id": "a1", "user_id": "u1", "date": "2026-11-23",
+        "start_time": "19:00", "available_minutes": 60,
+    }]
+    users = [{"user_id": "u1", "line_user_id": "line1", "study_reminders_enabled": True}]
+    previous_reminders = [{
+        "reminder_id": "checkin_t1_a1_202611231900",
+        "user_id": "u1", "task_id": "t1", "availability_id": "a1",
+        "kind": "study_session_checkin", "scheduled_at": "2026-11-23T19:10+08:00",
+        "status": "sent", "progress_status": "replanned",
+    }]
+
+    due = get_due_study_checkins(
+        tasks, plan, slots, users,
+        datetime(2026, 11, 23, 19, 35, tzinfo=TZ), previous_reminders,
+    )
+
+    assert len(due) == 1
+    assert due[0]["scheduled_at"] == "2026-11-23T19:35+08:00"
+    assert due[0]["reminder_id"] != previous_reminders[0]["reminder_id"]

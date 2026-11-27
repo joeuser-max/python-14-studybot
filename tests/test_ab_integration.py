@@ -194,7 +194,7 @@ def test_signed_line_webhook_binds_and_saves_course_note(monkeypatch, tmp_path):
     def unexpected_ai_call(*args, **kwargs):
         raise AssertionError("AI must not run without user consent")
 
-    monkeypatch.setattr(line_bot, "organize_class_feedback", unexpected_ai_call)
+    monkeypatch.setattr(reminder_worker, "organize_class_feedback", unexpected_ai_call)
     replies = []
     monkeypatch.setattr(
         line_bot,
@@ -243,7 +243,9 @@ def test_signed_line_webhook_binds_and_saves_course_note(monkeypatch, tmp_path):
         ("webhook-weekday", ["週一", "週二", "週三", "週四", "週五", "週六", "週日"][weekday - 1]),
         ("webhook-slot", "1"),
         ("webhook-progress", "4"),
+        ("webhook-course-progress", "Ch.4 p.22"),
         ("webhook-note", "今天複習了函式與清單"),
+        ("webhook-skip-task", "先不用"),
     ]
     for webhook_id, text in messages:
         response = send_webhook(client, secret, {
@@ -258,6 +260,7 @@ def test_signed_line_webhook_binds_and_saves_course_note(monkeypatch, tmp_path):
     feedback = load_json(data_path("feedback"))
     assert len(feedback) == 1
     assert feedback[0]["user_id"] == "demo_user_001"
+    assert feedback[0]["course_progress"] == "Ch.4 p.22"
     assert feedback[0]["event_id"] == "class-1"
     assert feedback[0]["class_date"] == yesterday.isoformat()
     assert feedback[0]["reminder_id"] == "reminder-1"
@@ -278,12 +281,11 @@ def test_signed_line_webhook_binds_and_saves_course_note(monkeypatch, tmp_path):
     markdown = export_learning_markdown(records, datetime.now(TZ), "demo_user_001")
     assert "今天複習了函式與清單" in markdown
     assert "自評理解進度：4/5" in markdown
+    assert "上課進度：Ch.4 p.22" in markdown
     assert "U-test" not in markdown
 
 
-def test_ai_feedback_is_saved_and_only_scheduled_after_user_confirmation(
-    monkeypatch, tmp_path
-):
+def test_ai_feedback_is_delivered_after_user_schedules_study(monkeypatch, tmp_path):
     init_data_dir(monkeypatch, tmp_path)
     secret = "test-channel-secret"
     monkeypatch.setenv("LINE_CHANNEL_SECRET", secret)
@@ -294,7 +296,7 @@ def test_ai_feedback_is_saved_and_only_scheduled_after_user_confirmation(
         "user_id": "demo_user_001",
         "line_user_id": "U-test",
         "reminders_enabled": True,
-        "study_reminders_enabled": False,
+        "study_reminders_enabled": True,
         "ai_after_class_enabled": True,
     }
     course = {
@@ -330,11 +332,6 @@ def test_ai_feedback_is_saved_and_only_scheduled_after_user_confirmation(
     }
     monkeypatch.setattr(
         line_bot,
-        "organize_class_feedback",
-        lambda feedback, course_title: analysis,
-    )
-    monkeypatch.setattr(
-        line_bot,
         "reply_line_message",
         lambda reply_token, text, choices=None: replies.append((text, choices)),
     )
@@ -345,6 +342,7 @@ def test_ai_feedback_is_saved_and_only_scheduled_after_user_confirmation(
         ("ai-weekday", ["週一", "週二", "週三", "週四", "週五", "週六", "週日"][weekday - 1]),
         ("ai-slot", "1"),
         ("ai-progress", "2"),
+        ("ai-course-progress", "Ch.2 第 3 節"),
         ("ai-note", "今天學習函式和清單，還不清楚預設參數。"),
     ]
     for webhook_id, text in messages:
@@ -359,17 +357,49 @@ def test_ai_feedback_is_saved_and_only_scheduled_after_user_confirmation(
 
     feedback = load_json(data_path("feedback"))[0]
     assert feedback["progress"] == 2
-    assert feedback["ai_analysis"] == analysis
-    assert feedback["topic_tags"] == ["函式", "清單"]
+    assert feedback["course_progress"] == "Ch.2 第 3 節"
+    assert "ai_analysis" not in feedback
     assert load_json(data_path("tasks")) == []
-    assert load_json(data_path("pending_notes"))[0]["stage"] == "ai_task_confirmation"
+    assert load_json(data_path("pending_notes"))[0]["stage"] == "study_minutes"
+    assert "讀書時段開始時" in replies[-1][0]
 
     response = send_webhook(client, secret, {
         "type": "message",
-        "webhookEventId": "ai-accept",
-        "replyToken": "reply-ai-accept",
+        "webhookEventId": "ai-minutes",
+        "replyToken": "reply-ai-minutes",
         "source": {"userId": "U-test"},
-        "message": {"type": "text", "text": "加入讀書任務"},
+        "message": {"type": "text", "text": "30"},
+    })
+    assert response.status_code == 200
+    assert load_json(data_path("tasks")) == []
+    assert load_json(data_path("pending_notes"))[0]["stage"] == "study_deadline"
+
+    response = send_webhook(client, secret, {
+        "type": "message",
+        "webhookEventId": "ai-deadline-invalid",
+        "replyToken": "reply-ai-deadline-invalid",
+        "source": {"userId": "U-test"},
+        "message": {"type": "text", "text": "2026-02-31"},
+    })
+    assert response.status_code == 200
+    assert load_json(data_path("tasks")) == []
+    assert load_json(data_path("pending_notes"))[0]["stage"] == "study_deadline"
+
+    response = send_webhook(client, secret, {
+        "type": "message",
+        "webhookEventId": "ai-deadline",
+        "replyToken": "reply-ai-deadline",
+        "source": {"userId": "U-test"},
+        "message": {"type": "text", "text": slot["date"]},
+    })
+    assert response.status_code == 200
+    assert load_json(data_path("pending_notes"))[0]["stage"] == "study_slot"
+    response = send_webhook(client, secret, {
+        "type": "message",
+        "webhookEventId": "ai-slot-choice",
+        "replyToken": "reply-ai-slot-choice",
+        "source": {"userId": "U-test"},
+        "message": {"type": "text", "text": "1"},
     })
     assert response.status_code == 200
     tasks = load_json(data_path("tasks"))
@@ -378,17 +408,41 @@ def test_ai_feedback_is_saved_and_only_scheduled_after_user_confirmation(
     assert tasks[0]["source_feedback_id"] == feedback["feedback_id"]
     assert tasks[0]["source_event_id"] == "class-1"
     assert tasks[0]["source_class_date"] == class_date
-    assert tasks[0]["deadline"] == (now.date() + timedelta(days=6)).isoformat()
-    assert tasks[0]["estimated_minutes"] == 45
+    assert tasks[0]["reading_progress"] == "Ch.2 第 3 節"
+    assert tasks[0]["deadline"] == slot["date"]
+    assert tasks[0]["estimated_minutes"] == 30
     assert plan[0]["status"] == "scheduled"
     assert plan[0]["availability_id"] == "slot-1"
     assert load_json(data_path("pending_notes")) == []
+
+    pushes = []
+    monkeypatch.setattr(
+        reminder_worker,
+        "organize_class_feedback",
+        lambda saved_feedback, course_title: analysis,
+    )
+    monkeypatch.setattr(
+        reminder_worker,
+        "push_line_message",
+        lambda target_user, reminder, text: pushes.append(text) or True,
+    )
+    study_at = datetime.fromisoformat(f"{slot['date']}T{slot['start_time']}:00+08:00")
+    delivered = reminder_worker.run_reminder_worker_once(study_at)
+    assert len(delivered) == 1
+    assert delivered[0]["kind"] == "study_session"
+    assert "本堂介紹函式與清單" in pushes[0]
+    assert "函式可重複使用" in pushes[0]
+    assert "尚不清楚函式參數的預設值" in pushes[0]
+    assert "練習撰寫含參數的函式" in pushes[0]
+    assert "本次排程依你設定的 30 分鐘" in pushes[0]
+    assert load_json(data_path("feedback"))[0]["ai_analysis"] == analysis
+
     duplicate = send_webhook(client, secret, {
         "type": "message",
-        "webhookEventId": "ai-accept",
-        "replyToken": "reply-ai-accept-duplicate",
+        "webhookEventId": "ai-slot-choice",
+        "replyToken": "reply-ai-slot-choice-duplicate",
         "source": {"userId": "U-test"},
-        "message": {"type": "text", "text": "加入讀書任務"},
+        "message": {"type": "text", "text": "1"},
     })
     assert duplicate.status_code == 200
     assert len(load_json(data_path("tasks"))) == 1
@@ -404,7 +458,7 @@ def test_ai_feedback_is_saved_and_only_scheduled_after_user_confirmation(
     assert "來源課程：程式設計" in markdown
 
 
-def test_ai_failure_keeps_original_feedback_and_clears_pending_state(
+def test_ai_enabled_note_is_saved_without_calling_ai_before_scheduling(
     monkeypatch, tmp_path
 ):
     init_data_dir(monkeypatch, tmp_path)
@@ -433,14 +487,6 @@ def test_ai_failure_keeps_original_feedback_and_clears_pending_state(
     save_json(data_path("users"), [user])
     save_json(data_path("events"), [course])
 
-    def failed_analysis(feedback, course_title):
-        raise line_bot.AIError("test API failure")
-
-    monkeypatch.setattr(
-        line_bot,
-        "organize_class_feedback",
-        failed_analysis,
-    )
     replies = []
     monkeypatch.setattr(
         line_bot,
@@ -453,7 +499,9 @@ def test_ai_failure_keeps_original_feedback_and_clears_pending_state(
         ("failure-weekday", ["週一", "週二", "週三", "週四", "週五", "週六", "週日"][weekday - 1]),
         ("failure-slot", "1"),
         ("failure-progress", "3"),
+        ("failure-course-progress", "第一章"),
         ("failure-note", "今天複習了函式參數"),
+        ("failure-skip-task", "先不用"),
     ]
 
     for webhook_id, text in messages:
@@ -470,9 +518,10 @@ def test_ai_failure_keeps_original_feedback_and_clears_pending_state(
     assert len(feedback) == 1
     assert feedback[0]["content"] == "今天複習了函式參數"
     assert feedback[0]["progress"] == 3
+    assert feedback[0]["course_progress"] == "第一章"
     assert "ai_analysis" not in feedback[0]
     assert load_json(data_path("pending_notes")) == []
-    assert "test API failure" in replies[-1]
+    assert "筆記已保存，未新增讀書任務" in replies[-1]
 
 
 def test_study_checkin_records_completion_and_replans_only_remaining_minutes(

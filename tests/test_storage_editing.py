@@ -6,15 +6,19 @@ from storage import (
     add_availability,
     add_availabilities,
     clear_task_availability_preference,
+    clear_user_data,
     data_path,
     delete_availability,
+    delete_feedback,
     load_json,
     record_task_progress,
     save_json,
+    save_feedback_attachment,
     search_learning_notes,
     update_feedback_analysis,
     update_availability,
     update_event,
+    update_feedback_attachment_filename,
     update_feedback_topic_tags,
     update_task,
     validate_feedback,
@@ -402,3 +406,85 @@ def test_note_search_and_tag_edits_are_user_scoped(monkeypatch, tmp_path):
     assert search_learning_notes(updated, "user-1", topic="函") == []
     with pytest.raises(DataError, match="找不到要更新的筆記"):
         update_feedback_topic_tags("note-2", "user-1", ["隱私"])
+
+
+def test_delete_feedback_is_scoped_to_user_and_rejects_missing(
+    monkeypatch, tmp_path
+):
+    use_test_data(monkeypatch, tmp_path)
+    feedback = [
+        {"feedback_id": "note-1", "user_id": "user-1"},
+        {"feedback_id": "note-1", "user_id": "user-2"},
+        {"feedback_id": "note-2", "user_id": "user-1"},
+    ]
+    save_json(data_path("feedback"), feedback)
+    user_one_pdf = save_feedback_attachment("note-1", "user-1", b"%PDF-1.7 user one")
+    user_two_pdf = save_feedback_attachment("note-1", "user-2", b"%PDF-1.7 user two")
+
+    delete_feedback("note-1", "user-1")
+
+    assert load_json(data_path("feedback")) == feedback[1:]
+    assert not user_one_pdf.exists()
+    assert user_two_pdf.read_bytes() == b"%PDF-1.7 user two"
+    with pytest.raises(DataError, match="找不到要刪除的課後回饋"):
+        delete_feedback("missing", "user-1")
+
+
+def test_update_feedback_attachment_filename_is_user_scoped(monkeypatch, tmp_path):
+    use_test_data(monkeypatch, tmp_path)
+    feedback = [
+        {"feedback_id": "note-1", "user_id": "user-1", "attachment_filename": ""},
+        {"feedback_id": "note-1", "user_id": "user-2", "attachment_filename": ""},
+    ]
+    save_json(data_path("feedback"), feedback)
+
+    update_feedback_attachment_filename("note-1", "user-1", "lecture.pdf")
+
+    assert load_json(data_path("feedback")) == [
+        {**feedback[0], "attachment_filename": "lecture.pdf"},
+        feedback[1],
+    ]
+    with pytest.raises(DataError, match="檔名必須是 255 字元內的 .pdf"):
+        update_feedback_attachment_filename("note-1", "user-1", "lecture.txt")
+
+
+def test_clear_user_data_removes_only_selected_user_records_and_pdf(
+    monkeypatch, tmp_path
+):
+    use_test_data(monkeypatch, tmp_path)
+    for name in (
+        "events",
+        "tasks",
+        "availability",
+        "plan",
+        "reminders",
+        "pending_notes",
+        "users",
+        "feedback",
+        "processed_webhooks",
+    ):
+        save_json(data_path(name), [
+            {"user_id": "user-1", "feedback_id": "note-1"},
+            {"user_id": "user-2", "feedback_id": "note-2"},
+        ])
+    user_pdf = save_feedback_attachment("note-1", "user-1", b"%PDF-1.7 data")
+    other_pdf = save_feedback_attachment("note-2", "user-2", b"%PDF-1.7 other")
+
+    clear_user_data("user-1")
+
+    for name in (
+        "events",
+        "tasks",
+        "availability",
+        "plan",
+        "reminders",
+        "pending_notes",
+        "users",
+        "feedback",
+    ):
+        assert load_json(data_path(name)) == [
+            {"user_id": "user-2", "feedback_id": "note-2"}
+        ]
+    assert load_json(data_path("processed_webhooks"))[0]["user_id"] == "user-1"
+    assert not user_pdf.exists()
+    assert other_pdf.read_bytes() == b"%PDF-1.7 other"
