@@ -4,6 +4,9 @@ import hmac
 import json
 import os
 
+from line_demo_registration import get_or_create_line_user, is_valid_line_user_id
+from line_demo_seed import SEEDED_STATUS, seed_line_user
+from line_web_auth import install_routes
 from line_note_files import clean_filename, download_line_file, extract_text
 from note_attachments import save_pdf_attachment
 from note_tasks import extract_questions, candidate_tasks, confirm_question_task, next_class_start
@@ -50,6 +53,8 @@ PROGRESS_LABELS = {
 AI_TASK_ACCEPT = "加入讀書任務"
 AI_TASK_SKIP = "先不用"
 DEMO_USER_ID = "demo_user_001"
+PENDING_DEMO_REPLY = "你的 ClassPulse 帳號已建立，個人 Demo 資料尚未準備完成；目前暫不開放筆記、任務或 AI 功能。"
+SEEDED_DEMO_REPLY = "你的個人虛構 Demo 資料已建立，尚待網頁身份驗證與安全驗收；目前暫不開放筆記、任務或 AI 功能。"
 
 
 def verify_line_signature(body: bytes, signature: str, secret: str) -> bool:
@@ -269,6 +274,9 @@ def _mark_processed(webhook_event_id: str, received_at: datetime) -> None:
 
 def _bind_demo_user(line_user_id: str) -> None:
     def bind(rows: list) -> list:
+        if any(row.get("line_user_id") == line_user_id
+               and row.get("user_id") != DEMO_USER_ID for row in rows):
+            raise DataError("此 LINE 帳號已有獨立 ClassPulse 帳號，不可重新綁定示範帳號")
         user = next((row for row in rows if row.get("user_id") == DEMO_USER_ID), None)
         if user:
             already_bound = user.get("line_user_id")
@@ -919,6 +927,10 @@ def _handle_text_event(event: dict, user: dict, now: datetime) -> bool | None:
                 [AI_TASK_ACCEPT,AI_TASK_SKIP],
             )
             return
+        if user.get("_personal_question_only"):
+            reply_line_message(reply_token, response_text +
+                               "\n沒有獨立疑問可建立紫色任務；筆記與摘要已保留。")
+            return
         if not analysis["suggested_task"]:
             reply_line_message(reply_token, response_text + "\n目前沒有足夠資訊提出複習任務。")
             return
@@ -949,11 +961,46 @@ def _process_event(event: dict, now: datetime) -> None:
     if any(row.get("webhook_event_id") == webhook_event_id for row in processed):
         return
 
-    line_user_id = event.get("source", {}).get("userId", "")
+    source = event.get("source", {})
+    line_user_id = source.get("userId", "")
+    # Never process private notes or binding commands in group/room contexts.
+    # Missing source.type is retained for the legacy signed test contract.
+    if source.get("type") not in (None, "user") or event.get("mode") == "standby":
+        _mark_processed(webhook_event_id, now)
+        return
+    if event.get("type") == "follow" and os.getenv("LINE_FRIEND_DEMO_ENABLED") == "1":
+        # No account creation from group/room or standby events.
+        if (source.get("type") == "user" and event.get("mode") != "standby"
+                and is_valid_line_user_id(line_user_id)):
+            # Storage failures must not acknowledge a successful registration.
+            registered, _ = get_or_create_line_user(line_user_id)
+            status = registered.get("demo_status")
+            if status == "pending_seed" and os.getenv("LINE_FRIEND_DEMO_SEED_ENABLED") == "1":
+                seed_line_user(registered["user_id"], now)
+                status = SEEDED_STATUS
+            if status in ("pending_seed", SEEDED_STATUS):
+                reply_line_message(event.get("replyToken", ""),
+                                   SEEDED_DEMO_REPLY if status == SEEDED_STATUS else PENDING_DEMO_REPLY)
+            else:
+                reply_line_message(event.get("replyToken", ""), "你的 ClassPulse 帳號已存在，歡迎回來。")
+        _mark_processed(webhook_event_id, now)
+        return
+
     message = event.get("message", {})
     raw_text = message.get("text", "") if isinstance(message, dict) else ""
     text = raw_text.strip() if isinstance(raw_text, str) else ""
     reply_token = event.get("replyToken", "")
+    # Pending users cannot enter legacy commands or download attachments,
+    # even after the opt-in switch is disabled again.
+    if line_user_id:
+        existing = next((row for row in load_json(data_path("users"))
+                         if row.get("line_user_id") == line_user_id), None)
+        if existing and existing.get("demo_status") in ("pending_seed", SEEDED_STATUS):
+            if event.get("type") == "message" and source.get("type") == "user":
+                reply_line_message(reply_token, SEEDED_DEMO_REPLY
+                                   if existing.get("demo_status") == SEEDED_STATUS else PENDING_DEMO_REPLY)
+            _mark_processed(webhook_event_id, now)
+            return
     if text.startswith("綁定 "):
         binding_code = os.getenv("LINE_BINDING_CODE", "")
         supplied_code = text.partition(" ")[2].strip()
@@ -972,7 +1019,7 @@ def _process_event(event: dict, now: datetime) -> None:
         return
 
     users = load_json(data_path("users"))
-    user = next((row for row in users if row.get("line_user_id") == line_user_id), None)
+    user = next((row for row in users if line_user_id and row.get("line_user_id") == line_user_id), None)
     if user:
         if event.get("type") == "message":
             if message.get("type") == "text":
@@ -996,6 +1043,7 @@ def _process_event(event: dict, now: datetime) -> None:
 
 def create_app() -> Flask:
     app = Flask(__name__)
+    install_routes(app)
     secret = os.getenv("LINE_CHANNEL_SECRET", "")
 
     @app.get("/health")

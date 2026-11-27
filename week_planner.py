@@ -70,8 +70,8 @@ def _busy(courses: list, external: list, tasks: list, slots: list,
             occupied.append((_datetime(event["start"]), _datetime(event["end"])))
         except (KeyError, ValueError):
             continue
-    task_map = {task.get("task_id"): task for task in tasks}
-    slot_map = {slot.get("availability_id"): slot for slot in slots}
+    task_map = {task.get("task_id"): task for task in tasks if task.get("user_id") == user_id}
+    slot_map = {slot.get("availability_id"): slot for slot in slots if slot.get("user_id") == user_id}
     for row in plan:
         if (row.get("user_id") != user_id or row.get("status") != "scheduled"
                 or row.get("task_id") == skip_task_id):
@@ -146,7 +146,9 @@ def place_manual(user_id: str, task_id: str, day: str, period: str,
     }
     # 先建立 slot 再更新 plan，使任何已儲存的 plan 指向已存在的 slot。
     def put_slot(rows):
-        return [row for row in rows if row.get("availability_id") != slot_id] + [slot]
+        if any(row.get("availability_id") == slot_id and row.get("user_id") != user_id for row in rows):
+            raise DataError("時段識別碼衝突")
+        return [row for row in rows if not (row.get("availability_id") == slot_id and row.get("user_id") == user_id)] + [slot]
     update_json(data_path("availability"), put_slot)
     entry = {
         "task_id": task_id, "user_id": user_id, "availability_id": slot_id,
@@ -176,7 +178,7 @@ def set_task_blocks(user_id: str, task_id: str, blocks: int) -> None:
     if not task:
         raise DataError("找不到任務")
     plan = load_json(data_path("plan"))
-    if any(p.get("task_id") == task_id and p.get("status") == "scheduled"
+    if any(p.get("user_id") == user_id and p.get("task_id") == task_id and p.get("status") == "scheduled"
            for p in plan):
         raise DataError("已排任務請先移回待排區，再拉長或縮短")
     modified = {**task, "estimated_minutes": blocks * 60,
@@ -266,7 +268,7 @@ def fill_remaining(user_id: str, now: datetime | None = None,
     """
     now = (now or datetime.now(TZ)).astimezone(TZ)
     records = _read_all()
-    slot_map = {slot.get("availability_id"): slot for slot in records["availability"]}
+    slot_map = {slot.get("availability_id"): slot for slot in records["availability"] if slot.get("user_id") == user_id}
     planned = set()
     for row in records["plan"]:
         if row.get("user_id") != user_id or row.get("status") != "scheduled":
@@ -311,7 +313,7 @@ def fill_remaining(user_id: str, now: datetime | None = None,
                 preferred = preference_overlap(start, end, targets)
                 # Consider workload already scheduled that day, not class hours.
                 day_workload = 0
-                slots = {x["availability_id"]: x for x in records["availability"]}
+                slots = {x["availability_id"]: x for x in records["availability"] if x.get("user_id") == user_id}
                 for row in records["plan"]:
                     if (row.get("user_id") != user_id or row.get("status") != "scheduled"
                             or row.get("availability_id") not in slots):
@@ -348,10 +350,17 @@ def fill_remaining(user_id: str, now: datetime | None = None,
         records["plan"].append(entry)
         placed.append(entry)
     if placed:
-        update_json(data_path("availability"), lambda rows: rows + [
-            slot for slot in records["availability"] if slot.get("board_generated")
-            and slot.get("availability_id") in {r["availability_id"] for r in placed}
-        ])
+        placed_slots = {r["availability_id"] for r in placed}
+        new_slots = {slot["availability_id"]: slot for slot in records["availability"]
+                     if slot.get("user_id") == user_id and slot.get("board_generated")
+                     and slot.get("availability_id") in placed_slots}
+        def put_slots(rows):
+            if any(row.get("availability_id") in placed_slots and row.get("user_id") != user_id
+                   for row in rows):
+                raise DataError("時段識別碼衝突")
+            return [row for row in rows if not (row.get("user_id") == user_id
+                    and row.get("availability_id") in placed_slots)] + list(new_slots.values())
+        update_json(data_path("availability"), put_slots)
         placed_ids = {row["task_id"] for row in placed}
         update_json(data_path("plan"), lambda rows: [
             row for row in rows
@@ -365,7 +374,7 @@ def board_payload(user_id: str, now: datetime | None = None) -> dict:
     now = (now or datetime.now(TZ)).astimezone(TZ)
     records = _read_all()
     tasks = [t for t in records["tasks"] if t.get("user_id") == user_id]
-    slots = {s["availability_id"]: s for s in records["availability"]}
+    slots = {s["availability_id"]: s for s in records["availability"] if s.get("user_id") == user_id}
     plan = {}
     for entry in records["plan"]:
         if entry.get("user_id") != user_id or entry.get("status") != "scheduled":

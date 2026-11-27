@@ -16,13 +16,17 @@ from storage import TZ, DataError, create_id, data_path, update_json
 _LINE_USER_ID = re.compile(r"^U[A-Za-z0-9_-]{2,64}$")
 
 
+def is_valid_line_user_id(value: object) -> bool:
+    return isinstance(value, str) and _LINE_USER_ID.fullmatch(value) is not None
+
+
 def get_or_create_line_user(line_user_id: str) -> tuple[dict, bool]:
     """Atomically return (stored_user, newly_created) without changing legacy rows.
 
     A repeated follow/message from the same LINE account resolves to exactly
     the same ClassPulse user, even when multiple requests arrive together.
     """
-    if not isinstance(line_user_id, str) or not _LINE_USER_ID.fullmatch(line_user_id):
+    if not is_valid_line_user_id(line_user_id):
         raise DataError("無效的 LINE 個人使用者識別碼")
 
     result: dict = {}

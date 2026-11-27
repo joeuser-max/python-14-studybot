@@ -1,0 +1,39 @@
+{
+    admin off
+    auto_https off
+    persist_config off
+}
+
+http://:{$PORT} {
+    route {
+        # Railway's platform health check receives only a static status.
+        handle /readyz {
+            respond "ok" 200
+        }
+        # No webhook traffic to the private staging Flask process.
+        handle /webhook* {
+            respond 404
+        }
+        basic_auth bcrypt {
+            tester {$CLASSPULSE_STAGING_PASSWORD_HASH}
+        }
+        handle /health {
+            reverse_proxy 127.0.0.1:5001 {
+                header_up -Authorization
+                header_up X-Forwarded-Proto https
+            }
+        }
+        handle /auth/line/* {
+            reverse_proxy 127.0.0.1:5001 {
+                header_up -Authorization
+                header_up X-Forwarded-Proto https
+            }
+        }
+        handle {
+            reverse_proxy 127.0.0.1:8502 {
+                header_up -Authorization
+                header_up X-Forwarded-Proto https
+            }
+        }
+    }
+}

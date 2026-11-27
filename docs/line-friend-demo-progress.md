@@ -97,3 +97,151 @@ UI still uses a hardcoded user ID.
 **Security:** never commit or post Channel Secret, Channel Access Token,
 LINE User IDs from real devices, ngrok Authtoken, binding codes, or
 raw private classroom notes in GitHub comments or screenshots.
+
+## Step 12.2 — Local acceptance (2026-11-28, Asia/Taipei)
+
+- @Onlynotonly synchronized Mac branch `feature/line-friend-demo` to
+  `514d0f6` by saving the redundant local .gitignore edit in a stash,
+  then fast-forwarding. Runtime data remains ignored.
+- Python 3.12.2 confirmed. User reported registration test passed; exact
+  pytest count and duration were not supplied.
+
+## Step 13 — Signed follow registration (implementation; verification pending)
+
+- `LINE_FRIEND_DEMO_ENABLED=1` opts into the new follow route;
+  absent/other values retain the old binding flow.
+- A signed personal follow registers or resolves exactly one account.
+  Invalid IDs, group/room and standby follow events do not register.
+  Storage failures are not marked processed.
+- Existing legacy users retain their IDs and preferences. An atomic
+  binding guard rejects a LINE ID already linked to a separate account.
+- Pending users receive a truthful status response and cannot enter
+  text/file/binding flows, even after the switch is disabled.
+- Offline Webhook tests use fake HMAC credentials, temporary storage and
+  mock reply calls. No real LINE credentials or runtime data are committed.
+- Do not enable the switch on the public tunnel yet. CI and local tests,
+  individual demo seeding, web authorization and two-phone E2E remain
+  required. Flask/ngrok settings remain unchanged.
+
+## Step 13 — Acceptance
+
+- Mac local module + Webhook tests: user reported `20 passed` after resolving
+  missing pypdf during collection; Step 12 had terminal evidence of 9 passed in 0.35s.
+- CI run 46062648073 succeeded. No live friend follow verified.
+
+## Step 14 — Personal synthetic seed
+
+- Reuse only `demo_data.sample_records` (pure fictional templates), never copy
+  another user's runtime data or call the shared demo reset function.
+- Per-user seed lock, persisted time anchor, stable globally distinct identifiers,
+  insert-only per-file updates and final status marker allow a failed seed to
+  resume without duplicating existing rows. This is not a cross-file transaction.
+- Six datasets: 14 courses, 15 tasks (including one illustrative confirmed
+  purple 30-minute task), 7 availability slots, 3 plan entries, 5 notes
+  with mock analyses on three, 3 external events. Other unresolved questions
+  remain candidates. No actual model calls, fake sent reminders, or shared
+  webhook replay IDs. All seeded rows are marked with demo_seed_version.
+- Successful seed changes pending_seed to seeded_pending_auth; both states
+  deny LINE note/task/file/AI flows. New opt-in LINE_FRIEND_DEMO_SEED_ENABLED=1
+  only has effect with LINE_FRIEND_DEMO_ENABLED=1. Keep both off on live tunnel.
+- Existing pending users can seed on a subsequent distinct follow event or
+  trusted internal seed call; replay of an already processed event is ignored.
+- No public access, ownership audit or web authentication yet. Shared storage
+  and legacy UI remain unmodified; Step 15 must verify all read/write paths.
+
+## Step 14 — Acceptance
+
+- @Onlynotonly reported local tests passed after Step 14 instructions
+  (full local pytest output/count was not supplied).
+- CI run 46063100830 passed on commit 4315736.
+
+## Step 15 — Ownership audit and targeted fixes (verification pending)
+
+- Storage: course updates match owner plus resource ID; status writes require
+  user_id, and new availability IDs cannot collide with another owner's slot.
+- Board/calendar: owner-scoped slot/task lookups and write guards; calendar
+  imports cannot overwrite another owner's external event by ID.
+- Scheduler: separate owners' time budgets; reminder joins use owner and ID.
+  Legacy ownerless scheduler rows resolve only when the task owner is unique.
+  Plan bridge rejects explicit foreign owner rather than rewriting it.
+- Worker: reminder reservation rejects ambiguous/foreign IDs, status changes
+  and plan lookups match owner, gated accounts cannot send even if preference
+  flags are set. This does not implement transactional consent revocation.
+- LINE: explicit group/room and standby events cannot enter private handlers.
+  Legacy signed payloads without source.type still supported for regression
+  compatibility. Existing pending/seeded accounts remain blocked.
+- Web: legacy read_all filters by the fixed server-side MVP ID. A configured
+  CLASSPULSE_PUBLIC_WEB=1 fails closed before data reads; default mode remains
+  local-only and unauthenticated. Never publish default mode. No public URL
+  query ID accepted as identity.
+- Reviewed notes candidate confirmation, source ownership, attachments naming,
+  exports, AI input filtering and metrics. They still rely on trusted caller
+  identity; no full authenticated session boundary has been implemented.
+- Added 10 adversarial ownership tests plus a signed group-message regression.
+  Shared JSON writes remain non-transactional across files. Raw storage APIs,
+  direct file access, identity/session switching and deployment need further
+  review at Step 16. This is targeted hardening, not a security certification.
+
+### Step 15 — Regression follow-up
+- @Onlynotonly reported all 40 targeted tests passed locally.
+- Full CI run 46063573670 on a6aaabc failed: 143 passed, 1 failed. The check-in scheduler built owner-qualified maps but still looked up bare IDs, returning zero valid due check-ins. Fixed both task and slot lookups; unambiguous legacy ownerless plan compatibility retained. Added two positive regression cases covering valid start and check-in reminders (explicit and legacy owner).
+- Full CI must pass before public identity integration is accepted. No deployment or feature flag changes.
+
+## Step 15 — Acceptance
+
+- @Onlynotonly reported full local `146 passed` after the check-in correction.
+- GitHub Actions run 46063747162 passed at 60ce68b. Offline acceptance complete.
+
+## Step 16 — LINE Login (private staging implementation; verification pending)
+
+- Use the LINE Login web authorization-code flow, not LIFF SDK. OAuth
+  state and browser cookie are bound to a one-time, ten-minute server-side
+  login attempt; nonce and S256 PKCE are checked. Flask exchanges code for
+  token and calls LINE's ID token verification endpoint (issuer, channel,
+  expiry, nonce and real LINE subject checked). Do not trust client-decoded
+  tokens or profile IDs. Only unique existing seeded independent users can
+  sign in; legacy demo_user_001 and unknown or pending users are rejected.
+- A random opaque session cookie (Secure, HttpOnly, SameSite=Lax, host-only)
+  is returned, never included in redirect URL. Only its hash is stored.
+  Session expires within one hour or token expiry, whichever comes first.
+  Reruns resolve the owner from cookie and existing user record; logout
+  revokes the session server-side. New verified owner clears UI session state.
+- Staging UI uses personal seeded data with mock AI behavior and locked
+  reminder settings; it cannot reset shared fixtures or enable LINE pushes.
+  The LINE user status remains seeded_pending_auth until later rollout.
+- Required private HTTPS reverse proxy: same origin for Streamlit and Flask;
+  /auth/line/* to Flask, / and Streamlit websocket/static routes to Streamlit.
+  Keep both backend ports private, preserve Host, use HTTPS, keep CSRF/CORS
+  enabled, redact callback query strings/cookies from access logs, rate-limit
+  auth routes, and prevent session/store access from web static paths.
+  Both processes need the same persistent DATA_DIR and server environment.
+- LINE Developers: create a LINE Login channel under the SAME provider as
+  the existing Messaging API channel (otherwise user IDs differ).
+  Register https://YOUR-STAGING-HOST/auth/line/callback as callback URL.
+  Configure only on the server (not committed):
+  CLASSPULSE_LINE_WEB_STAGING=1, CLASSPULSE_WEB_ORIGIN=https://YOUR-STAGING-HOST,
+  LINE_LOGIN_CHANNEL_ID, LINE_LOGIN_CHANNEL_SECRET.
+  Keep flags off until private staging setup is reviewed. Public mode still
+  fails closed even if staging is enabled. Do not expose legacy default UI.
+- Server runtime web_auth.json contains hashed session/browser/state IDs,
+  short-lived nonce and PKCE verifier; restrict filesystem access. No
+  LINE access token or ID token is persisted. No new dependencies.
+- Official reference:
+  https://developers.line.biz/en/docs/line-login/integrate-line-login/
+  https://developers.line.biz/en/docs/line-login/verify-id-token/
+  https://developers.line.biz/en/docs/messaging-api/getting-user-ids/
+- LIFF in-app browser flow, real LINE callback, HTTPS reverse proxy,
+  multi-device session behavior, rate limits and live end-to-end remain
+  unverified. LINE web auth inside LIFF browser is not guaranteed by LINE;
+  use an external browser for this first staging route.
+
+## Step 17 — private staging
+
+- Step 16 offline: user reports 161 passed; CI #250 succeeded.
+- User reports local independent worktree, reverse-proxy health/404 checks, HTTPS and real LINE Login, own UI, drag/drop, refresh and no earlier CORS errors (6/6). Protected Quick Tunnel repeatedly asked for email even on Flask /health. A fresh Quick Tunnel with Caddy Basic Auth resolved reported symptoms; localhost/external 401/200 passed. No live credentials or tunnel URLs recorded. Real logout, second identity and signed follow/seed E2E still outstanding.
+- Step 17.7: add private Railway deployment files and startup validation, persistent /data mount, one service/replica, Gunicorn/Streamlit/Caddy, tester allowlist and idempotent synthetic seed. Disable live webhook, reminder worker and AI. Explicit tester allowlist checked at each session resolution. No cloud account created, payment authorized, live deployment, image build or persistent-volume verification yet. See deploy/README.md.
+
+
+## Step 18–20 — Final 2.0 accepted internal demo (2026-11-28)
+
+Supersedes earlier pending live checks above: see [Final 2.0 contribution and acceptance record](final-2-0-contribution-and-acceptance.md) for complete chronology, Cloudflare refresh/CORS isolation and workaround, exact code baseline 0e0c0bd, local 186 tests/CI #264, and user-reported real-device checkpoints. Cloud and second-account live tests deferred. PR remains draft. Original LINE note backend and authenticated demo store still separate; see [Step 21 interaction audit](step21-line-interaction-audit.md) for comparison with @joeuser-max's 1ef63c8 and proposed single-owner real LINE interaction acceptance. Do not mistake signed onboarding or mock AI for verified full bidirectional data integration.

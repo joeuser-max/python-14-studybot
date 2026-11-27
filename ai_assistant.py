@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from urllib import request, error
 
 
@@ -68,11 +69,74 @@ CLASS_FEEDBACK_INSTRUCTIONS = (
 )
 
 
+def ai_provider() -> str:
+    provider = os.getenv("AI_PROVIDER", "openai").strip().lower()
+    if provider not in ("openai", "gemini"):
+        raise AIError("AI_PROVIDER 必須是 openai 或 gemini")
+    return provider
+
+
+def _credentials(api_key=None, model=None):
+    provider = ai_provider()
+    prefix = "GEMINI" if provider == "gemini" else "OPENAI"
+    key = api_key or os.getenv(prefix + "_API_KEY")
+    chosen_model = model or os.getenv(prefix + "_MODEL")
+    if not key or not chosen_model:
+        raise AIError(f"請先設定 {prefix}_API_KEY 和 {prefix}_MODEL")
+    return key, chosen_model
+
+
 def ai_is_configured() -> bool:
-    return bool(os.getenv("OPENAI_API_KEY") and os.getenv("OPENAI_MODEL"))
+    try:
+        _credentials()
+        return True
+    except AIError:
+        return False
+
+
+def _request_gemini_structured_output(payload: dict, api_key: str) -> dict:
+    model = payload["model"]
+    if not re.fullmatch(r"gemini-[a-zA-Z0-9.-]+", model):
+        raise AIError("Gemini 模型名稱無效")
+    body = {
+        "systemInstruction": {"parts": [{"text": payload["instructions"]}]},
+        "contents": [{"role": "user", "parts": [{"text": payload["input"]}]}],
+        "generationConfig": {
+            "responseMimeType": "application/json",
+            "responseJsonSchema": payload["text"]["format"]["schema"],
+            "maxOutputTokens": 4096,
+        },
+    }
+    req = request.Request(
+        f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent",
+        data=json.dumps(body, ensure_ascii=False).encode("utf-8"),
+        headers={"x-goog-api-key": api_key, "Content-Type": "application/json"},
+        method="POST",
+    )
+    try:
+        with request.urlopen(req, timeout=30) as resp:
+            raw = json.loads(resp.read().decode("utf-8"))
+    except error.HTTPError as exc:
+        raise AIError(f"Gemini API 呼叫失敗（HTTP {exc.code}），請檢查模型、額度與金鑰") from exc
+    except (error.URLError, TimeoutError, OSError, ValueError) as exc:
+        raise AIError("Gemini API 連線失敗或回傳無法解析，原始筆記保留") from exc
+    try:
+        candidate = raw["candidates"][0]
+        if candidate.get("finishReason") != "STOP":
+            raise AIError("Gemini 未完整回應或內容遭阻擋，原始筆記保留")
+        text = "".join(p.get("text", "") for p in candidate["content"]["parts"]
+                       if not p.get("thought", False))
+        parsed = json.loads(text)
+        if not isinstance(parsed, dict):
+            raise ValueError("expected JSON object")
+        return parsed
+    except (KeyError, IndexError, ValueError, TypeError, AttributeError) as exc:
+        raise AIError("Gemini 輸出不是有效 JSON，原始筆記保留") from exc
 
 
 def _request_structured_output(payload: dict, api_key: str) -> dict:
+    if ai_provider() == "gemini":
+        return _request_gemini_structured_output(payload, api_key)
     req = request.Request(
         "https://api.openai.com/v1/responses",
         data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
@@ -148,10 +212,7 @@ def organize_class_feedback(
     api_key: str | None = None,
     model: str | None = None,
 ) -> dict:
-    api_key = api_key or os.getenv("OPENAI_API_KEY")
-    model = model or os.getenv("OPENAI_MODEL")
-    if not api_key or not model:
-        raise AIError("請先設定 OPENAI_API_KEY 和 OPENAI_MODEL")
+    api_key, model = _credentials(api_key, model)
     content = feedback.get("content")
     progress = feedback.get("progress")
     if not isinstance(content, str) or len(content.strip()) < 2:
@@ -219,10 +280,7 @@ def validate_ai_suggestions(parsed: dict, valid_feedback_ids: set[str]) -> dict:
 
 def analyze_learning_records(feedbacks: list, user_id: str, markdown: str,
                              api_key: str | None = None, model: str | None = None) -> dict:
-    api_key = api_key or os.getenv("OPENAI_API_KEY")
-    model = model or os.getenv("OPENAI_MODEL")
-    if not api_key or not model:
-        raise AIError("請先設定 OPENAI_API_KEY 和 OPENAI_MODEL，或先下載 Markdown 交給外部 AI")
+    api_key, model = _credentials(api_key, model)
     own = [f for f in feedbacks if f.get("user_id") == user_id and f.get("feedback_id")]
     if not own:
         raise AIError("沒有可分析的學習回饋")
@@ -265,10 +323,7 @@ def generate_question_actions(candidates: list[dict],
     Invoke only following explicit user consent, and validate that the model
     neither invents new question IDs nor quietly discards existing questions.
     """
-    api_key = api_key or os.getenv("OPENAI_API_KEY")
-    model = model or os.getenv("OPENAI_MODEL")
-    if not api_key or not model:
-        raise AIError("需要 OPENAI_API_KEY 與 OPENAI_MODEL 才能使用真實 AI；展示模式可用規則候選")
+    api_key, model = _credentials(api_key, model)
     if not candidates:
         return {}
     if len(candidates) > 32:
