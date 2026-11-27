@@ -144,3 +144,15 @@ def test_line_checkin_does_not_replan_peer_tasks_in_visual_board(empty_db):
     assert len(after) == 1 and after[0] == old
     assert not any(x["availability_id"] == "board_a"
                    for x in storage.load_json(storage.data_path("availability")))
+
+
+def test_visual_resize_updates_remaining_minutes_if_present(empty_db):
+    task = {**t("a"), "estimated_minutes": 120, "remaining_minutes": 45}
+    storage.save_json(storage.data_path("tasks"), [task])
+    set_task_blocks(USER, "a", 2)
+    updated = storage.load_json(storage.data_path("tasks"))[0]
+    assert updated["estimated_minutes"] == 120
+    assert updated["remaining_minutes"] == 120
+    place_manual(USER, "a", "2026-11-27", "5", 1, NOW)
+    placed = storage.load_json(storage.data_path("tasks"))[0]
+    assert placed["estimated_minutes"] == placed["remaining_minutes"] == 60
