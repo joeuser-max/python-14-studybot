@@ -927,6 +927,10 @@ def _handle_text_event(event: dict, user: dict, now: datetime) -> bool | None:
                 [AI_TASK_ACCEPT,AI_TASK_SKIP],
             )
             return
+        if user.get("_personal_question_only"):
+            reply_line_message(reply_token, response_text +
+                               "\n沒有獨立疑問可建立紫色任務；筆記與摘要已保留。")
+            return
         if not analysis["suggested_task"]:
             reply_line_message(reply_token, response_text + "\n目前沒有足夠資訊提出複習任務。")
             return
