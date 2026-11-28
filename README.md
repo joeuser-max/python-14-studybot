@@ -4,6 +4,10 @@
 
 ## Problem｜為什麼需要 ClassPulse？
 
+> *“And you write that idea down so you won’t forget it.”*
+>
+> — David Lynch, [On Where Ideas Come From](https://www.williamlanday.com/2014/05/09/david-lynch-on-where-ideas-come-from/)
+
 靈感、疑問與學習心得往往在當下最清楚，卻也最容易在下一個行程開始後流失。即使已經記下筆記，從「知道自己不懂什麼」到「安排時間真正弄懂」仍需要另外整理、規劃與追蹤。傳統筆記、待辦清單與行事曆各自解決一部分問題，使用者卻必須自己維持三者的關聯。
 
 ClassPulse 的出發點是降低這些摩擦：**在想法出現時立即捕捉，在需要行動時提供明確安排，在執行後留下可回顧的資料。** 以學生學習為第一個應用場景，而不是將產品限制為一個課堂筆記工具。
